@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { traerTodas } from "@/lib/supabase/paginar";
 import { fechaRD, rangoDiasRD } from "@/lib/fecha-rd";
 import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 import { sumarDesglose, totalTarjeta } from "@/lib/pagos";
@@ -16,12 +17,23 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
     ventasCompletadas(supabase, rango),
     abonosDelRango(supabase, rango),
     gastosDelRango(supabase, rango),
-    supabase
-      .from("venta_items")
-      .select("nombre_producto, cantidad, subtotal, ventas!inner(fecha, estado)")
-      .gte("ventas.fecha", desdeISO)
-      .lt("ventas.fecha", hastaISO)
-      .eq("ventas.estado", "completada"),
+    // Productos de todas las ventas del período: se pagina por venta (cada
+    // venta trae todos sus productos), así no se corta en 1000 filas.
+    traerTodas((a, b) =>
+      supabase
+        .from("ventas")
+        .select("venta_items(nombre_producto, cantidad, subtotal)")
+        .eq("estado", "completada")
+        .gte("fecha", desdeISO)
+        .lt("fecha", hastaISO)
+        .order("fecha", { ascending: true })
+        .order("id", { ascending: true })
+        .range(a, b)
+    ).then((r) => ({
+      data: r.data.flatMap(
+        (v) => (v.venta_items ?? []) as { nombre_producto: string; cantidad: number; subtotal: number }[]
+      ),
+    })),
   ]);
 
   const ventasTotal = ventasRows.reduce((s, v) => s + v.total, 0);
@@ -83,13 +95,17 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
 
 export async function getGastos(desde: string, hasta: string): Promise<Gasto[]> {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("gastos")
-    .select("id, descripcion, categoria_gasto, monto, metodo_pago, fecha, notas, usuarios(nombre)")
-    .eq("activo", true)
-    .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
-    .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
-    .order("fecha", { ascending: false });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("gastos")
+      .select("id, descripcion, categoria_gasto, monto, metodo_pago, fecha, notas, usuarios(nombre)")
+      .eq("activo", true)
+      .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
+      .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
+      .order("fecha", { ascending: false })
+      .order("id", { ascending: false })
+      .range(a, b)
+  );
 
   return (data ?? []).map((g) => ({
     id: g.id,

@@ -1,17 +1,23 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { traerTodas } from "@/lib/supabase/paginar";
 import type { Producto, Cliente } from "./types";
 import { getCajaActual } from "@/lib/caja/queries";
 
 export async function getProductosActivos(): Promise<Producto[]> {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("productos")
-    .select(
-      "id, nombre, categoria, precio:precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, codigo_barras, unidad"
-    )
-    .eq("activo", true)
-    .order("nombre", { ascending: true });
+  // Todos los productos activos (antes el POS solo cargaba los primeros 1000).
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("productos")
+      .select(
+        "id, nombre, categoria, precio:precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, codigo_barras, unidad"
+      )
+      .eq("activo", true)
+      .order("nombre", { ascending: true })
+      .order("id", { ascending: true })
+      .range(a, b)
+  );
 
   return (data ?? []).map((p) => ({
     id: p.id,
@@ -29,11 +35,15 @@ export async function getProductosActivos(): Promise<Producto[]> {
 
 export async function getClientesActivos(): Promise<Cliente[]> {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("clientes")
-    .select("id, nombre, telefono, saldo_deuda")
-    .eq("activo", true)
-    .order("nombre", { ascending: true });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("clientes")
+      .select("id, nombre, telefono, saldo_deuda")
+      .eq("activo", true)
+      .order("nombre", { ascending: true })
+      .order("id", { ascending: true })
+      .range(a, b)
+  );
   return (data ?? []) as Cliente[];
 }
 

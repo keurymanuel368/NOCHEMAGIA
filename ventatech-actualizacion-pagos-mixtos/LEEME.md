@@ -60,9 +60,28 @@ caja (mismo turno) y muestra efectivo, tarjeta, transferencia y fiado.
 La tarjeta **"Ventas del mes"** cuenta solo desde el día 1 del mes actual hasta hoy, y lo
 dice en la tarjeta ("del 1 oct. a hoy · N ventas"), junto con el fiado incluido y las devoluciones.
 
+## 4. Listados completos (sin corte de 1000 filas)
+
+Supabase entrega como máximo 1000 filas por consulta. Ahora todos los listados piden las
+filas por páginas de 1000 hasta traerlas todas (archivo nuevo `src/lib/supabase/paginar.ts`):
+
+- **POS:** Historial del día y **la lista de productos y clientes del POS** (antes, con más
+  de 1000 productos, los demás no aparecían para vender).
+- **Reportes:** Ventas, Inventario, Clientes con deuda, Gastos y Abonos, y sus Excel/PDF.
+- **Contabilidad:** lista de gastos y productos más vendidos.
+- **Clientes / Fiado:** lista de clientes, deudas (antes solo las últimas 200), abonos y totales.
+- **Inventario:** productos (antes máximo 3000/1000), totales del inventario y compras
+  (antes solo las últimas 50).
+- **Devoluciones:** lista y totales del día/mes.
+- **Dashboard:** deudas pendientes, productos bajos y el panel de stock bajo (antes revisaba
+  solo los 50 productos con menos existencia).
+
+Se dejaron a propósito con límite: "Últimas ventas" del dashboard (8), el historial de caja
+(últimos 30 turnos) y las búsquedas puntuales.
+
 ## Archivos
 
-Nuevos: `src/lib/pagos.ts`, `src/lib/caja/cuadre.ts`, `src/lib/ventas/movimientos.ts`, `pagos-mixtos.sql`.
+Nuevos: `src/lib/pagos.ts`, `src/lib/supabase/paginar.ts`, `src/lib/caja/cuadre.ts`, `src/lib/ventas/movimientos.ts`, `pagos-mixtos.sql`.
 
 Modificados: ver `archivos-modificados.txt`.
 

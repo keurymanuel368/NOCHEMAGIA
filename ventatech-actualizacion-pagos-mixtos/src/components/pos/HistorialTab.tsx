@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { traerTodas } from "@/lib/supabase/paginar";
 import { formatMoney } from "@/lib/money";
 import { hoyRD, rangoDiasRD } from "@/lib/fecha-rd";
 import { VentaDetalleModal } from "./VentaDetalleModal";
@@ -44,17 +45,22 @@ export function HistorialTab() {
 
     (async () => {
       const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
+      // Todas las ventas del día, aunque pasen de 1000.
       const consultar = (conPagos: boolean) =>
-        supabase
-          .from("ventas")
-          .select(
-            `id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)${
-              conPagos ? ", venta_pagos(metodo, tipo_tarjeta, monto)" : ""
-            }`
-          )
-          .gte("fecha", desde)
-          .lt("fecha", hasta)
-          .order("fecha", { ascending: false });
+        traerTodas((a, b) =>
+          supabase
+            .from("ventas")
+            .select(
+              `id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)${
+                conPagos ? ", venta_pagos(metodo, tipo_tarjeta, monto)" : ""
+              }`
+            )
+            .gte("fecha", desde)
+            .lt("fecha", hasta)
+            .order("fecha", { ascending: false })
+            .order("id", { ascending: false })
+            .range(a, b)
+        );
       // Sin el SQL de pagos mixtos la tabla venta_pagos no existe: se
       // consulta sin el desglose.
       let res = await consultar(true);

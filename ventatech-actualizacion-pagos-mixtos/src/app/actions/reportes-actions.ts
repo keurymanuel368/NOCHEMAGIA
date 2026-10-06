@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { getUsuarioActual } from "@/lib/get-usuario-actual";
+import { traerTodas } from "@/lib/supabase/paginar";
 import { rangoDiasRD, ZONA_NEGOCIO } from "@/lib/fecha-rd";
 import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 import { sumarDesglose } from "@/lib/pagos";
@@ -22,12 +23,16 @@ export async function reporteVentasAction(desde: string, hasta: string): Promise
   await requireReportes();
   const supabase = await createClient();
   const { desdeISO, hastaISO } = rango(desde, hasta);
-  const { data } = await supabase
-    .from("ventas")
-    .select("numero_factura, fecha, total, metodo_pago, estado, clientes(nombre), usuarios(nombre)")
-    .gte("fecha", desdeISO)
-    .lt("fecha", hastaISO)
-    .order("fecha", { ascending: false });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("ventas")
+      .select("numero_factura, fecha, total, metodo_pago, estado, clientes(nombre), usuarios(nombre)")
+      .gte("fecha", desdeISO)
+      .lt("fecha", hastaISO)
+      .order("fecha", { ascending: false })
+      .order("id", { ascending: false })
+      .range(a, b)
+  );
 
   return {
     columns: ["Factura", "Fecha", "Cliente", "Total", "Método", "Estado", "Cajero"],
@@ -46,11 +51,15 @@ export async function reporteVentasAction(desde: string, hasta: string): Promise
 export async function reporteInventarioAction(): Promise<ReporteResultado> {
   await requireReportes();
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("productos")
-    .select("codigo_barras, nombre, precio_compra, precio_venta, stock, stock_minimo, categorias(nombre)")
-    .eq("activo", true)
-    .order("nombre", { ascending: true });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("productos")
+      .select("codigo_barras, nombre, precio_compra, precio_venta, stock, stock_minimo, categorias(nombre)")
+      .eq("activo", true)
+      .order("nombre", { ascending: true })
+      .order("id", { ascending: true })
+      .range(a, b)
+  );
 
   return {
     columns: ["Código", "Producto", "Categoría", "Costo", "P. Venta", "Stock", "Stock Mínimo"],
@@ -69,12 +78,16 @@ export async function reporteInventarioAction(): Promise<ReporteResultado> {
 export async function reporteClientesDeudasAction(): Promise<ReporteResultado> {
   await requireReportes();
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("clientes")
-    .select("nombre, cedula, telefono, saldo_deuda")
-    .gt("saldo_deuda", 0)
-    .eq("activo", true)
-    .order("saldo_deuda", { ascending: false });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("clientes")
+      .select("nombre, cedula, telefono, saldo_deuda")
+      .gt("saldo_deuda", 0)
+      .eq("activo", true)
+      .order("saldo_deuda", { ascending: false })
+      .order("id", { ascending: true })
+      .range(a, b)
+  );
 
   return {
     columns: ["Cliente", "Cédula", "Teléfono", "Deuda"],
@@ -86,13 +99,17 @@ export async function reporteGastosAction(desde: string, hasta: string): Promise
   await requireReportes();
   const supabase = await createClient();
   const { desdeISO, hastaISO } = rango(desde, hasta);
-  const { data } = await supabase
-    .from("gastos")
-    .select("descripcion, categoria_gasto, monto, metodo_pago, fecha, usuarios(nombre)")
-    .eq("activo", true)
-    .gte("fecha", desdeISO)
-    .lt("fecha", hastaISO)
-    .order("fecha", { ascending: false });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("gastos")
+      .select("descripcion, categoria_gasto, monto, metodo_pago, fecha, usuarios(nombre)")
+      .eq("activo", true)
+      .gte("fecha", desdeISO)
+      .lt("fecha", hastaISO)
+      .order("fecha", { ascending: false })
+      .order("id", { ascending: false })
+      .range(a, b)
+  );
 
   return {
     columns: ["Descripción", "Categoría", "Monto", "Método", "Fecha", "Usuario"],
@@ -111,12 +128,16 @@ export async function reporteAbonosAction(desde: string, hasta: string): Promise
   await requireReportes();
   const supabase = await createClient();
   const { desdeISO, hastaISO } = rango(desde, hasta);
-  const { data } = await supabase
-    .from("abonos")
-    .select("monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
-    .gte("fecha", desdeISO)
-    .lt("fecha", hastaISO)
-    .order("fecha", { ascending: false });
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("abonos")
+      .select("monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
+      .gte("fecha", desdeISO)
+      .lt("fecha", hastaISO)
+      .order("fecha", { ascending: false })
+      .order("id", { ascending: false })
+      .range(a, b)
+  );
 
   return {
     columns: ["Cliente", "Monto", "Método", "Fecha", "Cajero", "Notas"],

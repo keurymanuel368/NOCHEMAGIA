@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { traerTodas } from "@/lib/supabase/paginar";
 import {
   calcularCuadre,
   type AbonoMov,
@@ -13,28 +14,7 @@ export type { AbonoMov, CuadreTurno, DevolucionMov, GastoMov, VentaMov } from "@
 
 type SupabaseServer = Awaited<ReturnType<typeof createClient>>;
 
-// Supabase devuelve como máximo 1000 filas por consulta. Las sumas del mes,
-// del gráfico de 30 días y de la comparación anual se quedaban cortas en
-// cuanto había más de 1000 ventas: por eso se traen por páginas.
-const PAGINA = 1000;
-const MAX_PAGINAS = 200;
-
 type Resultado<T> = { data: T[] | null; error: { message: string } | null };
-
-async function traerTodas<T>(
-  armar: (desde: number, hasta: number) => PromiseLike<Resultado<T>>
-): Promise<{ data: T[]; error: { message: string } | null }> {
-  const filas: T[] = [];
-  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
-    const desde = pagina * PAGINA;
-    const { data, error } = await armar(desde, desde + PAGINA - 1);
-    if (error) return { data: filas, error };
-    const lote = data ?? [];
-    filas.push(...lote);
-    if (lote.length < PAGINA) break;
-  }
-  return { data: filas, error: null };
-}
 
 /** Rango de tiempo: `hasta` null = hasta ahora. */
 export type Rango = { desde: string; hasta: string | null; hastaIncluido?: boolean };

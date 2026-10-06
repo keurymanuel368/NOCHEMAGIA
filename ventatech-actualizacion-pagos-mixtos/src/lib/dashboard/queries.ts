@@ -1,5 +1,6 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
+import { traerTodas } from "@/lib/supabase/paginar";
 import { fechaRD, hoyRD, inicioDiaRD, inicioMes, inicioMesAnterior, sumarDias } from "@/lib/fecha-rd";
 import { ventasCompletadas, devolucionesDelRango, type Rango } from "@/lib/ventas/movimientos";
 import { centavos, sumarDesglose, totalTarjeta } from "@/lib/pagos";
@@ -139,8 +140,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     rangoAyer ? resumenVentas(supabase, rangoAyer) : Promise.resolve(SIN_VENTAS),
     resumenVentas(supabase, { desde: inicioDeMesISO(), hasta: null }),
     resumenVentas(supabase, { desde: inicioDeMesAnteriorISO(), hasta: inicioDeMesISO() }),
-    supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0),
-    supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true),
+    traerTodas((a, b) =>
+      supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0).order("id").range(a, b)
+    ),
+    traerTodas((a, b) =>
+      supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true).order("id").range(a, b)
+    ),
   ]);
 
   const desgloseHoy = sumarDesglose(hoy.ventas);
@@ -266,14 +271,19 @@ export async function getComparativaAnual(): Promise<MesComparativo[]> {
 
 export async function getStockBajo(limit = 8): Promise<ProductoStockBajo[]> {
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("productos")
-    .select("id, nombre, categoria, stock, stock_minimo")
-    .eq("activo", true)
-    .order("stock", { ascending: true })
-    .limit(50);
+  // Se revisan todos los productos (antes solo los 50 con menos existencia:
+  // un producto con stock alto pero mínimo más alto no salía).
+  const { data } = await traerTodas((a, b) =>
+    supabase
+      .from("productos")
+      .select("id, nombre, categoria, stock, stock_minimo")
+      .eq("activo", true)
+      .order("stock", { ascending: true })
+      .order("id", { ascending: true })
+      .range(a, b)
+  );
 
-  return (data ?? [])
+  return data
     .filter((p) => Number(p.stock) <= Number(p.stock_minimo))
     .slice(0, limit);
 }

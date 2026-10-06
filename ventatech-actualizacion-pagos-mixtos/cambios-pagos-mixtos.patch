@@ -247,19 +247,136 @@ index b88225f..0fc219c 100644
  }
  
 diff --git a/src/app/actions/reportes-actions.ts b/src/app/actions/reportes-actions.ts
-index 2d1f696..d8e46f5 100644
+index 2d1f696..da5d2d4 100644
 --- a/src/app/actions/reportes-actions.ts
 +++ b/src/app/actions/reportes-actions.ts
-@@ -3,6 +3,8 @@
+@@ -2,7 +2,10 @@
+ 
  import { createClient } from "@/lib/supabase/server";
  import { getUsuarioActual } from "@/lib/get-usuario-actual";
++import { traerTodas } from "@/lib/supabase/paginar";
  import { rangoDiasRD, ZONA_NEGOCIO } from "@/lib/fecha-rd";
 +import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 +import { sumarDesglose } from "@/lib/pagos";
  
  export type ReporteResultado = { columns: string[]; rows: (string | number)[][] };
  
-@@ -134,16 +136,19 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+@@ -20,12 +23,16 @@ export async function reporteVentasAction(desde: string, hasta: string): Promise
+   await requireReportes();
+   const supabase = await createClient();
+   const { desdeISO, hastaISO } = rango(desde, hasta);
+-  const { data } = await supabase
+-    .from("ventas")
+-    .select("numero_factura, fecha, total, metodo_pago, estado, clientes(nombre), usuarios(nombre)")
+-    .gte("fecha", desdeISO)
+-    .lt("fecha", hastaISO)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("ventas")
++      .select("numero_factura, fecha, total, metodo_pago, estado, clientes(nombre), usuarios(nombre)")
++      .gte("fecha", desdeISO)
++      .lt("fecha", hastaISO)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   return {
+     columns: ["Factura", "Fecha", "Cliente", "Total", "Método", "Estado", "Cajero"],
+@@ -44,11 +51,15 @@ export async function reporteVentasAction(desde: string, hasta: string): Promise
+ export async function reporteInventarioAction(): Promise<ReporteResultado> {
+   await requireReportes();
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("productos")
+-    .select("codigo_barras, nombre, precio_compra, precio_venta, stock, stock_minimo, categorias(nombre)")
+-    .eq("activo", true)
+-    .order("nombre", { ascending: true });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("productos")
++      .select("codigo_barras, nombre, precio_compra, precio_venta, stock, stock_minimo, categorias(nombre)")
++      .eq("activo", true)
++      .order("nombre", { ascending: true })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
+ 
+   return {
+     columns: ["Código", "Producto", "Categoría", "Costo", "P. Venta", "Stock", "Stock Mínimo"],
+@@ -67,12 +78,16 @@ export async function reporteInventarioAction(): Promise<ReporteResultado> {
+ export async function reporteClientesDeudasAction(): Promise<ReporteResultado> {
+   await requireReportes();
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("clientes")
+-    .select("nombre, cedula, telefono, saldo_deuda")
+-    .gt("saldo_deuda", 0)
+-    .eq("activo", true)
+-    .order("saldo_deuda", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("clientes")
++      .select("nombre, cedula, telefono, saldo_deuda")
++      .gt("saldo_deuda", 0)
++      .eq("activo", true)
++      .order("saldo_deuda", { ascending: false })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
+ 
+   return {
+     columns: ["Cliente", "Cédula", "Teléfono", "Deuda"],
+@@ -84,13 +99,17 @@ export async function reporteGastosAction(desde: string, hasta: string): Promise
+   await requireReportes();
+   const supabase = await createClient();
+   const { desdeISO, hastaISO } = rango(desde, hasta);
+-  const { data } = await supabase
+-    .from("gastos")
+-    .select("descripcion, categoria_gasto, monto, metodo_pago, fecha, usuarios(nombre)")
+-    .eq("activo", true)
+-    .gte("fecha", desdeISO)
+-    .lt("fecha", hastaISO)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("gastos")
++      .select("descripcion, categoria_gasto, monto, metodo_pago, fecha, usuarios(nombre)")
++      .eq("activo", true)
++      .gte("fecha", desdeISO)
++      .lt("fecha", hastaISO)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   return {
+     columns: ["Descripción", "Categoría", "Monto", "Método", "Fecha", "Usuario"],
+@@ -109,12 +128,16 @@ export async function reporteAbonosAction(desde: string, hasta: string): Promise
+   await requireReportes();
+   const supabase = await createClient();
+   const { desdeISO, hastaISO } = rango(desde, hasta);
+-  const { data } = await supabase
+-    .from("abonos")
+-    .select("monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
+-    .gte("fecha", desdeISO)
+-    .lt("fecha", hastaISO)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("abonos")
++      .select("monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
++      .gte("fecha", desdeISO)
++      .lt("fecha", hastaISO)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   return {
+     columns: ["Cliente", "Monto", "Método", "Fecha", "Cajero", "Notas"],
+@@ -134,16 +157,19 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
    const supabase = await createClient();
    const { desdeISO, hastaISO } = rango(desde, hasta);
  
@@ -287,7 +404,7 @@ index 2d1f696..d8e46f5 100644
    const ingresosReales = ventasTotal - fiadoTotal + abonosTotal;
    const utilidad = ingresosReales - gastosTotal;
  
-@@ -151,6 +156,11 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+@@ -151,6 +177,11 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
      columns: ["Concepto", "Monto"],
      rows: [
        ["Ventas totales", ventasTotal.toFixed(2)],
@@ -544,6 +661,79 @@ index e3aabe9..68ad5b7 100644
                    cajero: cajaActual.cajero_nombre,
                    abiertaAt: cajaActual.abierta_at,
                  }
+diff --git a/src/components/clientes/AbonosTab.tsx b/src/components/clientes/AbonosTab.tsx
+index ac6c888..496ab2e 100644
+--- a/src/components/clientes/AbonosTab.tsx
++++ b/src/components/clientes/AbonosTab.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { useEffect, useState } from "react";
+ import { createClient } from "@/lib/supabase/client";
++import { traerTodas } from "@/lib/supabase/paginar";
+ import { formatMoney } from "@/lib/money";
+ import { hoyRD, rangoDiasRD } from "@/lib/fecha-rd";
+ 
+@@ -30,12 +31,16 @@ export function AbonosTab() {
+     const supabase = createClient();
+     (async () => {
+       const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
+-      const { data } = await supabase
+-        .from("abonos")
+-        .select("id, monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
+-        .gte("fecha", desde)
+-        .lt("fecha", hasta)
+-        .order("fecha", { ascending: false });
++      const { data } = await traerTodas((a, b) =>
++        supabase
++          .from("abonos")
++          .select("id, monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
++          .gte("fecha", desde)
++          .lt("fecha", hasta)
++          .order("fecha", { ascending: false })
++          .order("id", { ascending: false })
++          .range(a, b)
++      );
+       if (cancelado) return;
+       setAbonos(
+         (data ?? []).map((a) => ({
+diff --git a/src/components/clientes/DeudasTab.tsx b/src/components/clientes/DeudasTab.tsx
+index e7e697a..d5e0992 100644
+--- a/src/components/clientes/DeudasTab.tsx
++++ b/src/components/clientes/DeudasTab.tsx
+@@ -3,6 +3,7 @@
+ import { useEffect, useMemo, useState } from "react";
+ import { Search, Trophy } from "lucide-react";
+ import { createClient } from "@/lib/supabase/client";
++import { traerTodas } from "@/lib/supabase/paginar";
+ import type { Deuda, FiadoResumen } from "@/lib/clientes/types";
+ import { formatMoney } from "@/lib/money";
+ import { AbonoModal } from "./AbonoModal";
+@@ -38,15 +39,16 @@ export function DeudasTab({
+     setLoading(true);
+     const supabase = createClient();
+     (async () => {
+-      let query = supabase
+-        .from("deudas")
+-        .select(
+-          "id, cliente_id, venta_id, monto_original, monto_pagado, saldo, estado, fecha, clientes(nombre, cedula, telefono), ventas(numero_factura)"
+-        )
+-        .order("fecha", { ascending: false })
+-        .limit(200);
+-      if (estado === "pagada") query = query.eq("estado", "pagada");
+-      const { data } = await query;
++      // Todas las deudas (antes solo las últimas 200).
++      const { data } = await traerTodas((a, b) => {
++        let query = supabase
++          .from("deudas")
++          .select(
++            "id, cliente_id, venta_id, monto_original, monto_pagado, saldo, estado, fecha, clientes(nombre, cedula, telefono), ventas(numero_factura)"
++          );
++        if (estado === "pagada") query = query.eq("estado", "pagada");
++        return query.order("fecha", { ascending: false }).order("id", { ascending: false }).range(a, b);
++      });
+       if (cancelado) return;
+       setDeudas(
+         (data ?? []).map((d) => ({
 diff --git a/src/components/dashboard/SalesChart.tsx b/src/components/dashboard/SalesChart.tsx
 index 3a49a28..646398e 100644
 --- a/src/components/dashboard/SalesChart.tsx
@@ -777,10 +967,14 @@ index 0bd1fd2..60afc15 100644
          <div className="relative">
            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-400">
 diff --git a/src/components/pos/HistorialTab.tsx b/src/components/pos/HistorialTab.tsx
-index 12bf428..58b06a5 100644
+index 12bf428..adc0107 100644
 --- a/src/components/pos/HistorialTab.tsx
 +++ b/src/components/pos/HistorialTab.tsx
-@@ -5,12 +5,14 @@ import { createClient } from "@/lib/supabase/client";
+@@ -2,15 +2,18 @@
+ 
+ import { useEffect, useMemo, useState } from "react";
+ import { createClient } from "@/lib/supabase/client";
++import { traerTodas } from "@/lib/supabase/paginar";
  import { formatMoney } from "@/lib/money";
  import { hoyRD, rangoDiasRD } from "@/lib/fecha-rd";
  import { VentaDetalleModal } from "./VentaDetalleModal";
@@ -795,7 +989,7 @@ index 12bf428..58b06a5 100644
    estado: string;
    fecha: string;
    cliente_nombre: string;
-@@ -22,6 +24,7 @@ const METODO_EMOJI: Record<string, string> = {
+@@ -22,6 +25,7 @@ const METODO_EMOJI: Record<string, string> = {
    tarjeta: "💳",
    transferencia: "🔁",
    fiado: "📒",
@@ -803,7 +997,7 @@ index 12bf428..58b06a5 100644
  };
  
  function hoyISO() {
-@@ -41,12 +44,34 @@ export function HistorialTab() {
+@@ -41,12 +45,39 @@ export function HistorialTab() {
  
      (async () => {
        const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
@@ -813,17 +1007,22 @@ index 12bf428..58b06a5 100644
 -        .gte("fecha", desde)
 -        .lt("fecha", hasta)
 -        .order("fecha", { ascending: false });
++      // Todas las ventas del día, aunque pasen de 1000.
 +      const consultar = (conPagos: boolean) =>
-+        supabase
-+          .from("ventas")
-+          .select(
-+            `id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)${
-+              conPagos ? ", venta_pagos(metodo, tipo_tarjeta, monto)" : ""
-+            }`
-+          )
-+          .gte("fecha", desde)
-+          .lt("fecha", hasta)
-+          .order("fecha", { ascending: false });
++        traerTodas((a, b) =>
++          supabase
++            .from("ventas")
++            .select(
++              `id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)${
++                conPagos ? ", venta_pagos(metodo, tipo_tarjeta, monto)" : ""
++              }`
++            )
++            .gte("fecha", desde)
++            .lt("fecha", hasta)
++            .order("fecha", { ascending: false })
++            .order("id", { ascending: false })
++            .range(a, b)
++        );
 +      // Sin el SQL de pagos mixtos la tabla venta_pagos no existe: se
 +      // consulta sin el desglose.
 +      let res = await consultar(true);
@@ -844,7 +1043,7 @@ index 12bf428..58b06a5 100644
  
        if (cancelado) return;
        setVentas(
-@@ -55,6 +80,7 @@ export function HistorialTab() {
+@@ -55,6 +86,7 @@ export function HistorialTab() {
            numero_factura: v.numero_factura,
            total: Number(v.total),
            metodo_pago: v.metodo_pago,
@@ -852,7 +1051,7 @@ index 12bf428..58b06a5 100644
            estado: v.estado,
            fecha: v.fecha,
            cliente_nombre:
-@@ -73,14 +99,15 @@ export function HistorialTab() {
+@@ -73,14 +105,15 @@ export function HistorialTab() {
  
    // Mismo criterio que "Ventas de hoy" y el cierre de caja: solo ventas
    // completadas (las anuladas o devueltas se listan pero no suman).
@@ -875,7 +1074,7 @@ index 12bf428..58b06a5 100644
      return { total, porMetodo };
    }, [ventas]);
  
-@@ -98,9 +125,9 @@ export function HistorialTab() {
+@@ -98,9 +131,9 @@ export function HistorialTab() {
              <span className="font-semibold text-neutral-900 dark:text-white">
                Total del día: {formatMoney(resumen.total)}
              </span>
@@ -888,7 +1087,7 @@ index 12bf428..58b06a5 100644
                </span>
              ))}
            </div>
-@@ -133,7 +160,8 @@ export function HistorialTab() {
+@@ -133,7 +166,8 @@ export function HistorialTab() {
                      hour: "numeric",
                      minute: "2-digit",
                    })}{" "}
@@ -1834,14 +2033,133 @@ index 165784d..27684d9 100644
            </tbody>
          </table>
  
+diff --git a/src/lib/clientes/queries.ts b/src/lib/clientes/queries.ts
+index 390ce2a..b7c7a28 100644
+--- a/src/lib/clientes/queries.ts
++++ b/src/lib/clientes/queries.ts
+@@ -1,5 +1,6 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
+ import { hoyRD, inicioDiaRD, rangoDiasRD } from "@/lib/fecha-rd";
+ import type { Cliente, Deuda, Abono, ClientesStats, FiadoResumen } from "./types";
+ 
+@@ -23,9 +24,18 @@ export async function getClientes(): Promise<Cliente[]> {
+   // La suma de compras por cliente se calcula con un GROUP BY dentro de
+   // la base de datos (función clientes_con_totales): con miles de ventas,
+   // traerlas todas a JavaScript para sumarlas a mano sería muy lento.
+-  const { data } = (await supabase.rpc("clientes_con_totales")) as {
+-    data: ClienteConTotalesRow[] | null;
+-  };
++  // Todos los clientes, por páginas de 1000.
++  const { data } = await traerTodas<ClienteConTotalesRow>(
++    (a, b) =>
++      supabase
++        .rpc("clientes_con_totales")
++        .order("nombre", { ascending: true })
++        .order("id", { ascending: true })
++        .range(a, b) as unknown as PromiseLike<{
++        data: ClienteConTotalesRow[] | null;
++        error: { message: string } | null;
++      }>
++  );
+ 
+   return (data ?? []).map((c) => ({
+     id: c.id,
+@@ -48,8 +58,10 @@ export async function getClientesStats(): Promise<ClientesStats> {
+   const hoyInicio = inicioDiaRD(hoyRD());
+ 
+   const [{ data: clientes }, { data: abonosHoy }] = await Promise.all([
+-    supabase.from("clientes").select("saldo_deuda").eq("activo", true),
+-    supabase.from("abonos").select("monto").gte("fecha", hoyInicio),
++    traerTodas((a, b) =>
++      supabase.from("clientes").select("saldo_deuda").eq("activo", true).order("id").range(a, b)
++    ),
++    traerTodas((a, b) => supabase.from("abonos").select("monto").gte("fecha", hoyInicio).order("id").range(a, b)),
+   ]);
+ 
+   const rows = clientes ?? [];
+@@ -63,18 +75,17 @@ export async function getClientesStats(): Promise<ClientesStats> {
+ 
+ export async function getDeudas(estado: "pendiente" | "pagada" | "todas" = "pendiente"): Promise<Deuda[]> {
+   const supabase = await createClient();
+-  let query = supabase
+-    .from("deudas")
+-    .select(
+-      "id, cliente_id, venta_id, monto_original, monto_pagado, saldo, estado, fecha, clientes(nombre, cedula, telefono), ventas(numero_factura)"
+-    )
+-    .order("fecha", { ascending: false })
+-    .limit(200);
+-
+-  if (estado === "pendiente") query = query.in("estado", ["pendiente", "parcial"]);
+-  else if (estado === "pagada") query = query.eq("estado", "pagada");
+-
+-  const { data } = await query;
++  // Todas las deudas (antes se mostraban solo las últimas 200).
++  const { data } = await traerTodas((a, b) => {
++    let query = supabase
++      .from("deudas")
++      .select(
++        "id, cliente_id, venta_id, monto_original, monto_pagado, saldo, estado, fecha, clientes(nombre, cedula, telefono), ventas(numero_factura)"
++      );
++    if (estado === "pendiente") query = query.in("estado", ["pendiente", "parcial"]);
++    else if (estado === "pagada") query = query.eq("estado", "pagada");
++    return query.order("fecha", { ascending: false }).order("id", { ascending: false }).range(a, b);
++  });
+ 
+   return (data ?? []).map((d) => ({
+     id: d.id,
+@@ -94,10 +105,14 @@ export async function getDeudas(estado: "pendiente" | "pagada" | "todas" = "pend
+ 
+ export async function getFiadoResumen(): Promise<FiadoResumen> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("deudas")
+-    .select("cliente_id, saldo")
+-    .in("estado", ["pendiente", "parcial"]);
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("deudas")
++      .select("cliente_id, saldo")
++      .in("estado", ["pendiente", "parcial"])
++      .order("id")
++      .range(a, b)
++  );
+ 
+   const rows = data ?? [];
+   return {
+@@ -121,12 +136,16 @@ export async function getTopDeudores(limit = 5): Promise<{ nombre: string; saldo
+ export async function getAbonosDelDia(fecha: string): Promise<{ abonos: Abono[]; total: number }> {
+   const supabase = await createClient();
+   const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
+-  const { data } = await supabase
+-    .from("abonos")
+-    .select("id, cliente_id, deuda_id, monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
+-    .gte("fecha", desde)
+-    .lt("fecha", hasta)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("abonos")
++      .select("id, cliente_id, deuda_id, monto, metodo_pago, fecha, notas, clientes(nombre), usuarios(nombre)")
++      .gte("fecha", desde)
++      .lt("fecha", hasta)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   const abonos = (data ?? []).map((a) => ({
+     id: a.id,
 diff --git a/src/lib/contabilidad/queries.ts b/src/lib/contabilidad/queries.ts
-index ed9bfd8..7732b10 100644
+index ed9bfd8..e39b759 100644
 --- a/src/lib/contabilidad/queries.ts
 +++ b/src/lib/contabilidad/queries.ts
-@@ -1,21 +1,21 @@
+@@ -1,42 +1,54 @@
  import "server-only";
  import { createClient } from "@/lib/supabase/server";
 -import { rangoDiasRD } from "@/lib/fecha-rd";
++import { traerTodas } from "@/lib/supabase/paginar";
 +import { fechaRD, rangoDiasRD } from "@/lib/fecha-rd";
 +import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 +import { sumarDesglose, totalTarjeta } from "@/lib/pagos";
@@ -1860,6 +2178,12 @@ index ed9bfd8..7732b10 100644
 -      .lt("fecha", hastaISO),
 -    supabase.from("abonos").select("monto").gte("fecha", desdeISO).lt("fecha", hastaISO),
 -    supabase.from("gastos").select("monto, categoria_gasto").eq("activo", true).gte("fecha", desdeISO).lt("fecha", hastaISO),
+-    supabase
+-      .from("venta_items")
+-      .select("nombre_producto, cantidad, subtotal, ventas!inner(fecha, estado)")
+-      .gte("ventas.fecha", desdeISO)
+-      .lt("ventas.fecha", hastaISO)
+-      .eq("ventas.estado", "completada"),
 +  // Todas las filas del período (antes se cortaba en 1000 ventas) y las
 +  // ventas mixtas repartidas entre sus métodos.
 +  const rango = { desde: desdeISO, hasta: hastaISO };
@@ -1867,11 +2191,23 @@ index ed9bfd8..7732b10 100644
 +    ventasCompletadas(supabase, rango),
 +    abonosDelRango(supabase, rango),
 +    gastosDelRango(supabase, rango),
-     supabase
-       .from("venta_items")
-       .select("nombre_producto, cantidad, subtotal, ventas!inner(fecha, estado)")
-@@ -24,19 +24,19 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
-       .eq("ventas.estado", "completada"),
++    // Productos de todas las ventas del período: se pagina por venta (cada
++    // venta trae todos sus productos), así no se corta en 1000 filas.
++    traerTodas((a, b) =>
++      supabase
++        .from("ventas")
++        .select("venta_items(nombre_producto, cantidad, subtotal)")
++        .eq("estado", "completada")
++        .gte("fecha", desdeISO)
++        .lt("fecha", hastaISO)
++        .order("fecha", { ascending: true })
++        .order("id", { ascending: true })
++        .range(a, b)
++    ).then((r) => ({
++      data: r.data.flatMap(
++        (v) => (v.venta_items ?? []) as { nombre_producto: string; cantidad: number; subtotal: number }[]
++      ),
++    })),
    ]);
  
 -  const ventasRows = ventas ?? [];
@@ -1901,7 +2237,7 @@ index ed9bfd8..7732b10 100644
      gastosPorCatMap.set(g.categoria_gasto, (gastosPorCatMap.get(g.categoria_gasto) ?? 0) + Number(g.monto));
    }
    const gastosPorCategoria = Array.from(gastosPorCatMap.entries())
-@@ -45,7 +45,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+@@ -45,7 +57,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
  
    const porDiaMap = new Map<string, number>();
    for (const v of ventasRows) {
@@ -1910,20 +2246,46 @@ index ed9bfd8..7732b10 100644
      porDiaMap.set(key, (porDiaMap.get(key) ?? 0) + Number(v.total));
    }
    const ventasPorDia = Array.from(porDiaMap.entries())
+@@ -83,13 +95,17 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+ 
+ export async function getGastos(desde: string, hasta: string): Promise<Gasto[]> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("gastos")
+-    .select("id, descripcion, categoria_gasto, monto, metodo_pago, fecha, notas, usuarios(nombre)")
+-    .eq("activo", true)
+-    .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
+-    .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("gastos")
++      .select("id, descripcion, categoria_gasto, monto, metodo_pago, fecha, notas, usuarios(nombre)")
++      .eq("activo", true)
++      .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
++      .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   return (data ?? []).map((g) => ({
+     id: g.id,
 diff --git a/src/lib/dashboard/queries.ts b/src/lib/dashboard/queries.ts
-index e2d22ba..3608591 100644
+index e2d22ba..cbcc249 100644
 --- a/src/lib/dashboard/queries.ts
 +++ b/src/lib/dashboard/queries.ts
-@@ -1,6 +1,8 @@
+@@ -1,6 +1,9 @@
  import "server-only";
  import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
  import { fechaRD, hoyRD, inicioDiaRD, inicioMes, inicioMesAnterior, sumarDias } from "@/lib/fecha-rd";
 +import { ventasCompletadas, devolucionesDelRango, type Rango } from "@/lib/ventas/movimientos";
 +import { centavos, sumarDesglose, totalTarjeta } from "@/lib/pagos";
  
  /** Turno de caja que define "el día" del dashboard. */
  export type TurnoCaja = {
-@@ -11,11 +13,24 @@ export type TurnoCaja = {
+@@ -11,11 +14,24 @@ export type TurnoCaja = {
  export type DashboardStats = {
    /** null si el negocio nunca ha abierto caja: entonces "hoy" es el día calendario. */
    turno: TurnoCaja | null;
@@ -1948,7 +2310,7 @@ index e2d22ba..3608591 100644
    ingresosMesAnteriorTotal: number;
    deudasPendientesTotal: number;
    clientesConDeuda: number;
-@@ -92,66 +107,48 @@ async function getTurnos(supabase: SupabaseServer) {
+@@ -92,66 +108,52 @@ async function getTurnos(supabase: SupabaseServer) {
    return { actual, anterior };
  }
  
@@ -2010,6 +2372,8 @@ index e2d22ba..3608591 100644
 -      .eq("estado", "completada")
 -      .gte("fecha", inicioDeMesAnteriorISO())
 -      .lt("fecha", inicioDeMesISO()),
+-    supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0),
+-    supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true),
 +      ? { desde: turnoAnterior.abiertaAt, hasta: turnoAnterior.cerradaAt, hastaIncluido: true }
 +      : null
 +    : { desde: inicioDeAyerISO(), hasta: inicioDeHoyISO() };
@@ -2019,8 +2383,12 @@ index e2d22ba..3608591 100644
 +    rangoAyer ? resumenVentas(supabase, rangoAyer) : Promise.resolve(SIN_VENTAS),
 +    resumenVentas(supabase, { desde: inicioDeMesISO(), hasta: null }),
 +    resumenVentas(supabase, { desde: inicioDeMesAnteriorISO(), hasta: inicioDeMesISO() }),
-     supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0),
-     supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true),
++    traerTodas((a, b) =>
++      supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0).order("id").range(a, b)
++    ),
++    traerTodas((a, b) =>
++      supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true).order("id").range(a, b)
++    ),
    ]);
  
 -  const hoyRows = ventasHoy.data ?? [];
@@ -2042,7 +2410,7 @@ index e2d22ba..3608591 100644
    const deudaRows = clientes.data ?? [];
    const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
  
-@@ -163,18 +160,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+@@ -163,18 +165,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  
    return {
      turno,
@@ -2076,7 +2444,7 @@ index e2d22ba..3608591 100644
      clientesAtendidosHoy,
    };
  }
-@@ -182,23 +188,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+@@ -182,23 +193,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  export async function getVentasUltimosDias(dias: number): Promise<VentaDia[]> {
    const supabase = await createClient();
    const desde = sumarDias(hoyRD(), -(dias - 1));
@@ -2118,7 +2486,7 @@ index e2d22ba..3608591 100644
  }
  
  export async function getUltimasVentas(limit = 8): Promise<UltimaVenta[]> {
-@@ -227,27 +242,25 @@ const MESES_CORTOS = [
+@@ -227,40 +247,43 @@ const MESES_CORTOS = [
  
  export async function getComparativaAnual(): Promise<MesComparativo[]> {
    const supabase = await createClient();
@@ -2160,6 +2528,83 @@ index e2d22ba..3608591 100644
    }));
  }
  
+ export async function getStockBajo(limit = 8): Promise<ProductoStockBajo[]> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("productos")
+-    .select("id, nombre, categoria, stock, stock_minimo")
+-    .eq("activo", true)
+-    .order("stock", { ascending: true })
+-    .limit(50);
+-
+-  return (data ?? [])
++  // Se revisan todos los productos (antes solo los 50 con menos existencia:
++  // un producto con stock alto pero mínimo más alto no salía).
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("productos")
++      .select("id, nombre, categoria, stock, stock_minimo")
++      .eq("activo", true)
++      .order("stock", { ascending: true })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
++
++  return data
+     .filter((p) => Number(p.stock) <= Number(p.stock_minimo))
+     .slice(0, limit);
+ }
+diff --git a/src/lib/devoluciones/queries.ts b/src/lib/devoluciones/queries.ts
+index da29dbb..960e54e 100644
+--- a/src/lib/devoluciones/queries.ts
++++ b/src/lib/devoluciones/queries.ts
+@@ -1,18 +1,23 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
+ import { hoyRD, inicioDiaRD, inicioMes, rangoDiasRD } from "@/lib/fecha-rd";
+ import type { Devolucion, DevolucionesStats } from "./types";
+ 
+ export async function getDevoluciones(desde: string, hasta: string): Promise<{ devoluciones: Devolucion[]; total: number }> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("devoluciones")
+-    .select(
+-      "id, venta_id, motivo, total_devuelto, metodo_devolucion, fecha, ventas(numero_factura, clientes(nombre)), usuarios(nombre)"
+-    )
+-    .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
+-    .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
+-    .order("fecha", { ascending: false });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("devoluciones")
++      .select(
++        "id, venta_id, motivo, total_devuelto, metodo_devolucion, fecha, ventas(numero_factura, clientes(nombre)), usuarios(nombre)"
++      )
++      .gte("fecha", rangoDiasRD(desde, hasta).desdeISO)
++      .lt("fecha", rangoDiasRD(desde, hasta).hastaISO)
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   const devoluciones = (data ?? []).map((d) => {
+     const venta = d.ventas as unknown as { numero_factura: string; clientes: { nombre: string } | null } | null;
+@@ -39,8 +44,12 @@ export async function getDevolucionesStats(): Promise<DevolucionesStats> {
+   const mesInicio = inicioDiaRD(inicioMes(fechaHoy));
+ 
+   const [{ data: hoy }, { data: mes }] = await Promise.all([
+-    supabase.from("devoluciones").select("total_devuelto").gte("fecha", hoyInicio),
+-    supabase.from("devoluciones").select("total_devuelto").gte("fecha", mesInicio),
++    traerTodas((a, b) =>
++      supabase.from("devoluciones").select("total_devuelto").gte("fecha", hoyInicio).order("id").range(a, b)
++    ),
++    traerTodas((a, b) =>
++      supabase.from("devoluciones").select("total_devuelto").gte("fecha", mesInicio).order("id").range(a, b)
++    ),
+   ]);
+ 
+   return {
 diff --git a/src/lib/fecha-rd.ts b/src/lib/fecha-rd.ts
 index ec4f4c1..5073452 100644
 --- a/src/lib/fecha-rd.ts
@@ -2189,6 +2634,89 @@ index ec4f4c1..5073452 100644
  }
  
  /** Hoy (YYYY-MM-DD) en hora de RD, sin importar la zona del servidor o del navegador. */
+diff --git a/src/lib/inventario/queries.ts b/src/lib/inventario/queries.ts
+index 828cfd4..ea16e7e 100644
+--- a/src/lib/inventario/queries.ts
++++ b/src/lib/inventario/queries.ts
+@@ -1,5 +1,6 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
+ import type {
+   ProductoInventario,
+   Categoria,
+@@ -55,28 +56,31 @@ function mapProducto(p: ProductoRow): ProductoInventario {
+ const PRODUCTO_SELECT =
+   "id, codigo_barras, nombre, descripcion, categoria_id, proveedor_id, precio_compra, precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, unidad, aplica_itbis, activo, created_at, categorias(nombre), proveedores(nombre)";
+ 
+-// Límite de seguridad: evita que un catálogo enorme haga la carga lenta o
+-// se cuelgue. Con miles de productos convendría paginar de verdad, pero por
+-// ahora esto solo protege el caso extremo sin cambiar cómo se usa la pantalla.
+-const LIMITE_PRODUCTOS = 3000;
+-
+ export async function getProductosInventario(): Promise<ProductoInventario[]> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("productos")
+-    .select(PRODUCTO_SELECT)
+-    .eq("activo", true)
+-    .order("nombre", { ascending: true })
+-    .limit(LIMITE_PRODUCTOS);
++  // Todos los productos activos, por páginas de 1000.
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("productos")
++      .select(PRODUCTO_SELECT)
++      .eq("activo", true)
++      .order("nombre", { ascending: true })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
+   return ((data ?? []) as unknown as ProductoRow[]).map(mapProducto);
+ }
+ 
+ export async function getInventarioStats(): Promise<InventarioStats> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("productos")
+-    .select("precio_compra, stock, stock_minimo")
+-    .eq("activo", true);
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("productos")
++      .select("precio_compra, stock, stock_minimo")
++      .eq("activo", true)
++      .order("id")
++      .range(a, b)
++  );
+ 
+   const rows = data ?? [];
+   const stock_bajo = rows.filter(
+@@ -121,13 +125,17 @@ export async function getProveedores(): Promise<Proveedor[]> {
+ 
+ export async function getCompras(): Promise<Compra[]> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("compras")
+-    .select(
+-      "id, numero_orden, fecha, total, estado, notas, proveedores(nombre), usuarios(nombre), compras_detalle(count)"
+-    )
+-    .order("fecha", { ascending: false })
+-    .limit(50);
++  // Todas las compras (antes solo las últimas 50).
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("compras")
++      .select(
++        "id, numero_orden, fecha, total, estado, notas, proveedores(nombre), usuarios(nombre), compras_detalle(count)"
++      )
++      .order("fecha", { ascending: false })
++      .order("id", { ascending: false })
++      .range(a, b)
++  );
+ 
+   return (data ?? []).map((c) => ({
+     id: c.id,
 diff --git a/src/lib/offline/db.ts b/src/lib/offline/db.ts
 index a8e73a4..b4cd394 100644
 --- a/src/lib/offline/db.ts
@@ -2635,18 +3163,58 @@ index b77eb07..4f069e0 100644
        </body>
      </html>
 diff --git a/src/lib/pos/queries.ts b/src/lib/pos/queries.ts
-index 2827a37..2f686a4 100644
+index 2827a37..4b9d769 100644
 --- a/src/lib/pos/queries.ts
 +++ b/src/lib/pos/queries.ts
-@@ -1,6 +1,7 @@
+@@ -1,16 +1,23 @@
  import "server-only";
  import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
  import type { Producto, Cliente } from "./types";
 +import { getCajaActual } from "@/lib/caja/queries";
  
  export async function getProductosActivos(): Promise<Producto[]> {
    const supabase = await createClient();
-@@ -36,28 +37,9 @@ export async function getClientesActivos(): Promise<Cliente[]> {
+-  const { data } = await supabase
+-    .from("productos")
+-    .select(
+-      "id, nombre, categoria, precio:precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, codigo_barras, unidad"
+-    )
+-    .eq("activo", true)
+-    .order("nombre", { ascending: true });
++  // Todos los productos activos (antes el POS solo cargaba los primeros 1000).
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("productos")
++      .select(
++        "id, nombre, categoria, precio:precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, codigo_barras, unidad"
++      )
++      .eq("activo", true)
++      .order("nombre", { ascending: true })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
+ 
+   return (data ?? []).map((p) => ({
+     id: p.id,
+@@ -28,36 +35,21 @@ export async function getProductosActivos(): Promise<Producto[]> {
+ 
+ export async function getClientesActivos(): Promise<Cliente[]> {
+   const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("clientes")
+-    .select("id, nombre, telefono, saldo_deuda")
+-    .eq("activo", true)
+-    .order("nombre", { ascending: true });
++  const { data } = await traerTodas((a, b) =>
++    supabase
++      .from("clientes")
++      .select("id, nombre, telefono, saldo_deuda")
++      .eq("activo", true)
++      .order("nombre", { ascending: true })
++      .order("id", { ascending: true })
++      .range(a, b)
++  );
    return (data ?? []) as Cliente[];
  }
  
@@ -2691,14 +3259,47 @@ index 7dc9442..d251d0e 100644
 +// "mixto": parte en efectivo, parte en tarjeta y/o transferencia. Las partes
 +// se guardan en la tabla `venta_pagos` (ver src/lib/pagos.ts).
 +export type MetodoPago = "efectivo" | "tarjeta" | "transferencia" | "fiado" | "mixto";
+diff --git a/src/lib/supabase/paginar.ts b/src/lib/supabase/paginar.ts
+new file mode 100644
+index 0000000..f0f596c
+--- /dev/null
++++ b/src/lib/supabase/paginar.ts
+@@ -0,0 +1,26 @@
++// Supabase devuelve como máximo 1000 filas por consulta. Para los listados,
++// reportes y totales se piden todas las filas por páginas de 1000.
++//
++// La consulta que se pasa debe tener un orden fijo (por ejemplo, terminar en
++// `.order("id")`) para que ninguna fila se repita ni se salte entre páginas.
++// Sirve en el servidor y en el navegador.
++
++export const PAGINA = 1000;
++const MAX_PAGINAS = 500;
++
++type Respuesta<T> = { data: T[] | null; error: { message: string } | null };
++
++export async function traerTodas<T>(
++  armar: (desde: number, hasta: number) => PromiseLike<Respuesta<T>>
++): Promise<{ data: T[]; error: { message: string } | null }> {
++  const filas: T[] = [];
++  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
++    const desde = pagina * PAGINA;
++    const { data, error } = await armar(desde, desde + PAGINA - 1);
++    if (error) return { data: filas, error };
++    const lote = data ?? [];
++    filas.push(...lote);
++    if (lote.length < PAGINA) break;
++  }
++  return { data: filas, error: null };
++}
 diff --git a/src/lib/ventas/movimientos.ts b/src/lib/ventas/movimientos.ts
 new file mode 100644
-index 0000000..76ac594
+index 0000000..f76c21f
 --- /dev/null
 +++ b/src/lib/ventas/movimientos.ts
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,118 @@
 +import "server-only";
 +import { createClient } from "@/lib/supabase/server";
++import { traerTodas } from "@/lib/supabase/paginar";
 +import {
 +  calcularCuadre,
 +  type AbonoMov,
@@ -2712,28 +3313,7 @@ index 0000000..76ac594
 +
 +type SupabaseServer = Awaited<ReturnType<typeof createClient>>;
 +
-+// Supabase devuelve como máximo 1000 filas por consulta. Las sumas del mes,
-+// del gráfico de 30 días y de la comparación anual se quedaban cortas en
-+// cuanto había más de 1000 ventas: por eso se traen por páginas.
-+const PAGINA = 1000;
-+const MAX_PAGINAS = 200;
-+
 +type Resultado<T> = { data: T[] | null; error: { message: string } | null };
-+
-+async function traerTodas<T>(
-+  armar: (desde: number, hasta: number) => PromiseLike<Resultado<T>>
-+): Promise<{ data: T[]; error: { message: string } | null }> {
-+  const filas: T[] = [];
-+  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
-+    const desde = pagina * PAGINA;
-+    const { data, error } = await armar(desde, desde + PAGINA - 1);
-+    if (error) return { data: filas, error };
-+    const lote = data ?? [];
-+    filas.push(...lote);
-+    if (lote.length < PAGINA) break;
-+  }
-+  return { data: filas, error: null };
-+}
 +
 +/** Rango de tiempo: `hasta` null = hasta ahora. */
 +export type Rango = { desde: string; hasta: string | null; hastaIncluido?: boolean };
