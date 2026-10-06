@@ -11,6 +11,7 @@
   --accent:#1E5BFF; --accent-2:#5B8EFF; --accent-soft:rgba(30,91,255,.10); --on-accent:#FFFFFF;
   --img-a:#F1F6FF; --img-b:#DDE8FB; --glass:rgba(255,255,255,.72);
   --sky-a:#BFD6FF; --sky-b:#F4F8FF; --good:#14A05A;
+  --rim:drop-shadow(0 0 0 transparent);
   --shadow:0 1px 2px rgba(16,40,100,.05),0 10px 28px rgba(16,40,100,.08);
   --shadow-lg:0 30px 80px rgba(20,40,90,.22),0 8px 20px rgba(20,40,90,.10);
   --f-display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Manrope","Helvetica Neue",system-ui,sans-serif;
@@ -23,7 +24,8 @@
   --bg:#060B19; --surface:#0E1630; --surface-2:#141E3E; --line:rgba(140,170,255,.12);
   --fg:#EEF2FF; --fg-2:#A2AECA; --fg-3:#67739A;
   --accent:#3170FF; --accent-2:#6A9BFF; --accent-soft:rgba(49,112,255,.18); --on-accent:#FFFFFF;
-  --img-a:#18244A; --img-b:#0C1430; --glass:rgba(14,22,48,.72);
+  --img-a:#22305E; --img-b:#111A3A; --glass:rgba(14,22,48,.72);
+  --rim:drop-shadow(0 0 .8px rgba(200,220,255,.85)) drop-shadow(0 0 6px rgba(120,160,255,.18));
   --sky-a:#0E2160; --sky-b:#060B19; --good:#3DDC8A;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px rgba(0,0,0,.35);
   --shadow-lg:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(120,150,255,.08);
@@ -33,7 +35,8 @@
   --bg:#060B19; --surface:#0E1630; --surface-2:#141E3E; --line:rgba(140,170,255,.12);
   --fg:#EEF2FF; --fg-2:#A2AECA; --fg-3:#67739A;
   --accent:#3170FF; --accent-2:#6A9BFF; --accent-soft:rgba(49,112,255,.18); --on-accent:#FFFFFF;
-  --img-a:#18244A; --img-b:#0C1430; --glass:rgba(14,22,48,.72);
+  --img-a:#22305E; --img-b:#111A3A; --glass:rgba(14,22,48,.72);
+  --rim:drop-shadow(0 0 .8px rgba(200,220,255,.85)) drop-shadow(0 0 6px rgba(120,160,255,.18));
   --sky-a:#0E2160; --sky-b:#060B19; --good:#3DDC8A;
   --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px rgba(0,0,0,.35);
   --shadow-lg:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(120,150,255,.08);
@@ -121,7 +124,7 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .hero h2{font-family:var(--f-display);font-size:25px;line-height:1.08;letter-spacing:-.03em;margin:0;max-width:62%;text-wrap:balance}
 .hero h2 em{font-style:normal;color:var(--accent)}
 .hero p{margin:6px 0 0;font-size:12px;color:var(--fg-2);max-width:52%;line-height:1.45}
-.hero .gl{position:absolute;right:-26px;top:56px;width:62%;transform:rotate(-14deg);filter:drop-shadow(0 18px 18px rgba(0,20,80,.25))}
+.hero .gl{position:absolute;right:-26px;top:56px;width:62%;transform:rotate(-14deg);filter:var(--rim) drop-shadow(0 18px 18px rgba(0,20,80,.25))}
 .btn{height:54px;border-radius:17px;background:linear-gradient(180deg,var(--accent-2),var(--accent));color:var(--on-accent);font-weight:700;font-size:16px;display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 22px;box-shadow:0 10px 24px -8px var(--accent);transition:transform .2s var(--ease),filter .2s,background .3s}
 .btn:active{transform:scale(.97);filter:brightness(.95)}
 .btn svg{width:18px;height:18px}
@@ -149,6 +152,7 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .pcard{background:var(--surface);border-radius:22px;box-shadow:var(--shadow);overflow:hidden;cursor:pointer;transition:transform .3s var(--ease);display:flex;flex-direction:column;min-width:0}
 .pcard:active{transform:scale(.97)}
 .pimg{position:relative;aspect-ratio:1.15;background:linear-gradient(160deg,var(--img-a),var(--img-b));display:grid;place-items:center}
+.gl{filter:var(--rim)}
 .pimg .gl{width:84%;transition:transform .5s var(--ease)}
 .pcard:hover .pimg .gl{transform:scale(1.05) rotate(-2deg)}
 .fav{position:absolute;top:8px;right:8px;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--glass);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--fg-2)}
@@ -183,7 +187,7 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
   background:radial-gradient(90% 120% at 100% 0%,#7FB0FF 0%,transparent 55%),linear-gradient(135deg,#1E5BFF,#0B2A8C)}
 .banner h2{font-family:var(--f-display);font-size:30px;letter-spacing:-.03em;margin:0;line-height:1}
 .banner p{margin:8px 0 0;font-size:13px;opacity:.85;max-width:55%;line-height:1.4}
-.banner .gl{position:absolute;right:-18px;bottom:-4px;width:56%;transform:rotate(-10deg);filter:drop-shadow(0 14px 14px rgba(0,0,40,.4))}
+.banner .gl{position:absolute;right:-18px;bottom:-4px;width:56%;transform:rotate(-10deg);filter:var(--rim) drop-shadow(0 14px 14px rgba(0,0,40,.4))}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:14px 20px 14px}
 .select{position:relative;display:inline-flex;align-items:center}
 .select select{appearance:none;-webkit-appearance:none;border:0;border-radius:12px;height:36px;padding:0 34px 0 14px;background:var(--surface);box-shadow:var(--shadow);font-weight:600;font-size:13px;color:var(--fg)}
@@ -203,11 +207,11 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .ccard.wide .pimg{width:54%;aspect-ratio:1.6;flex:none}
 
 /* product detail */
-.phero{position:relative;height:360px;background:radial-gradient(80% 70% at 50% 35%,var(--surface) 0%,transparent 70%),linear-gradient(170deg,var(--img-a),var(--img-b))}
+.phero{position:relative;height:410px;background:radial-gradient(80% 70% at 50% 35%,var(--surface) 0%,transparent 70%),linear-gradient(170deg,var(--img-a),var(--img-b))}
 .carousel{position:absolute;inset:0;display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none}
 .carousel::-webkit-scrollbar{display:none}
-.slide{flex:none;width:100%;height:100%;scroll-snap-align:center;display:grid;place-items:center;padding:60px 22px 40px}
-.slide .gl{width:100%;filter:drop-shadow(0 24px 22px rgba(0,20,80,.22));transform:perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg));transition:transform .7s cubic-bezier(.2,.8,.2,1)}
+.slide{flex:none;width:100%;height:100%;scroll-snap-align:center;display:grid;place-items:center;padding:calc(var(--sb) + 64px) 30px 56px}
+.slide .gl{width:100%;filter:var(--rim) drop-shadow(0 24px 22px rgba(0,20,80,.22));transform:perspective(900px) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg));transition:transform .7s cubic-bezier(.2,.8,.2,1)}
 .enter .slide:first-child .gl{animation:float-in .9s var(--ease) backwards}
 @keyframes float-in{from{transform:translateY(24px) scale(.92) rotate(-6deg);opacity:0}to{transform:none;opacity:1}}
 .dots{position:absolute;bottom:42px;left:0;right:0;display:flex;justify-content:center;gap:6px}
@@ -377,7 +381,7 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .splash .logo{font-size:40px;animation:logo-in 1s var(--ease) both}
 .splash .logo svg{width:2.1em}
 .splash .tagline{font-size:15px;animation:fade-up .9s var(--ease) .35s both}
-.splash .gl{position:absolute;bottom:90px;left:-14%;width:128%;transform:rotate(-16deg);animation:glide 1.6s var(--ease) .2s both;filter:drop-shadow(0 30px 30px rgba(0,20,80,.35))}
+.splash .gl{position:absolute;bottom:90px;left:-14%;width:128%;transform:rotate(-16deg);animation:glide 1.6s var(--ease) .2s both;filter:var(--rim) drop-shadow(0 30px 30px rgba(0,20,80,.35))}
 @keyframes logo-in{from{opacity:0;transform:scale(.86);filter:blur(10px)}to{opacity:1;transform:none;filter:none}}
 @keyframes glide{from{opacity:0;transform:translateX(40%) rotate(-24deg)}to{opacity:1;transform:rotate(-16deg)}}
 .progress{position:absolute;bottom:56px;width:120px;height:4px;border-radius:2px;background:var(--line);overflow:hidden}
@@ -386,7 +390,7 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .welcome{flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden;padding:calc(var(--sb) + 20px) 26px 46px;
   background:radial-gradient(70% 45% at 70% 18%,rgba(255,255,255,.65),transparent 70%),linear-gradient(180deg,var(--sky-a) 0%,var(--sky-b) 78%)}
 .welcome .stagegl{flex:1;display:grid;place-items:center;position:relative}
-.welcome .stagegl .gl{width:115%;max-width:none;animation:float 6s ease-in-out infinite;filter:drop-shadow(0 40px 34px rgba(0,30,100,.32))}
+.welcome .stagegl .gl{width:115%;max-width:none;animation:float 6s ease-in-out infinite;filter:var(--rim) drop-shadow(0 40px 34px rgba(0,30,100,.32))}
 @keyframes float{0%,100%{transform:translateY(0) rotate(-8deg)}50%{transform:translateY(-14px) rotate(-5deg)}}
 .welcome h1{font-family:var(--f-display);font-size:36px;line-height:1.04;letter-spacing:-.035em;margin:0 0 12px;text-wrap:balance}
 .welcome p{margin:0 0 26px;color:var(--fg-2);line-height:1.55;font-size:15px}
