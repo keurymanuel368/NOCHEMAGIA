@@ -75,8 +75,12 @@ input,select{font:inherit;color:inherit}
 }
 
 /* ---------- screens ---------- */
-.screen{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;will-change:transform}
+#app{position:absolute;inset:0;overflow:hidden}
+.screen{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;contain:layout paint style;backface-visibility:hidden;transform:translateZ(0)}
 .screen.pushed{box-shadow:-18px 0 40px rgba(0,0,0,.10)}
+.shade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;z-index:1}
+.flyer{position:absolute;left:0;top:0;z-index:70;pointer-events:none;transform-origin:0 0;will-change:transform}
+.pc-only{display:none!important}
 .scroll{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:none;padding-top:var(--sb)}
 .scroll::-webkit-scrollbar{display:none}
 .pad{padding-inline:20px}
@@ -395,10 +399,106 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
 .toast span{flex:1}
 .toast button{color:var(--accent-2);font-weight:700}
 
+/* ---------- mode switch ---------- */
+.modebar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:100;display:flex;gap:4px;padding:4px;border-radius:14px;background:var(--surface);box-shadow:var(--shadow)}
+.modebar button{height:36px;padding:0 16px;border-radius:10px;display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;color:var(--fg-2);transition:background .35s var(--ease),color .35s}
+.modebar button svg{width:18px;height:18px}
+.modebar button.on{background:var(--accent);color:var(--on-accent)}
+.stage{padding-top:78px}
+.device{view-transition-name:device}
+.device:not(.pc){height:min(844px,calc(100dvh - 110px))}
+.chrome,.webbar{display:none}
+@media (max-width:760px){.modebar{display:none}.stage{padding-top:28px}.device:not(.pc){height:min(844px,calc(100dvh - 56px))}}
+@media (max-width:500px){.stage{padding:0}.device:not(.pc){height:100%}}
+
+/* ---------- PC mode ---------- */
+.stage.pc{gap:0}
+.stage.pc .aside{display:none}
+.device.pc{--sb:0px;--apph:calc(100dvh - 210px);width:min(1320px,100%);height:calc(100dvh - 100px);min-height:560px;border-radius:14px;box-shadow:0 0 0 1px var(--line),var(--shadow-lg)}
+.pc .statusbar,.pc .homebar,.pc .tabbar,.pc .home-nav,.pc .nav [data-to="cart"],.pc .floatbar .cartslot,.pc .mobile-only{display:none!important}
+.pc .pc-only{display:flex!important}
+.pc .chrome{display:flex;align-items:center;gap:14px;height:40px;padding:0 14px;background:var(--surface-2);border-bottom:1px solid var(--line);position:relative;z-index:40}
+.chrome .lights{display:flex;gap:7px}
+.chrome .lights i{width:11px;height:11px;border-radius:50%;background:#FF5F57}
+.chrome .lights i:nth-child(2){background:#FEBC2E}
+.chrome .lights i:nth-child(3){background:#28C840}
+.chrome .url{flex:1;max-width:520px;margin:0 auto;height:26px;border-radius:8px;background:var(--surface);display:flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;color:var(--fg-2)}
+.chrome .url svg{width:12px;height:12px}
+.chrome .url b{font-weight:500;color:var(--fg)}
+.pc .webbar{display:flex;align-items:center;gap:28px;height:64px;padding:0 max(24px,calc((100% - 1160px)/2 + 20px));background:var(--glass);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-bottom:1px solid var(--line);position:relative;z-index:40}
+.webbar .links{display:flex;gap:6px;flex:1}
+.webbar .links button{height:36px;padding:0 14px;border-radius:10px;font-weight:600;font-size:14px;color:var(--fg-2);transition:background .3s,color .3s}
+.webbar .links button:hover{color:var(--fg)}
+.webbar .links button.on{color:var(--accent);background:var(--accent-soft)}
+.webbar .wsearch{width:260px;height:40px;font-size:14px;box-shadow:inset 0 0 0 1px var(--line)}
+.pc #app{top:104px}
+.pc .scroll{padding-inline:max(0px,calc((100% - 1160px)/2))}
+.pc .with-tab .scroll{padding-bottom:48px}
+.pc .with-bar .scroll{padding-bottom:130px}
+.pc .nav{padding:18px 20px 6px;min-height:0}
+.pc .nav h1{font-size:30px}
+.pc .scrolled .nav{background:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+.pc .grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}
+.pc .hscroll{gap:20px}
+.pc .hscroll .pcard{width:calc((min(1160px,100vw) - 40px - 80px)/5)}
+.pc .hero{min-height:380px;padding:56px;justify-content:center;gap:28px}
+.pc .hero h2{font-size:54px;max-width:52%}
+.pc .hero p{font-size:16px;max-width:40%;margin-top:14px}
+.pc .hero .gl{width:50%;right:3%;top:70px}
+.pc .btn.sm{height:48px;font-size:15px;padding:0 22px}
+.pc .cats{gap:16px;margin-top:24px}
+.pc .cat{font-size:13.5px}
+.pc .cat .ic{aspect-ratio:1.9;border-radius:20px}
+.pc .cat .ic .gl{width:46%}
+.pc .trust{padding:18px 24px}
+.pc .trust div{font-size:13px;gap:12px}
+.pc .trust svg{width:28px;height:28px}
+.pc .banner{min-height:230px;padding:44px}
+.pc .banner h2{font-size:52px}
+.pc .banner p{font-size:16px;max-width:40%}
+.pc .banner .gl{width:38%;right:6%;bottom:10px}
+.pc .seg[data-seg="g"]{max-width:480px}
+.pc .cgrid{grid-template-columns:repeat(6,minmax(0,1fr));gap:20px}
+.pc .ccard{grid-column:span 2}
+.pc .ccard:nth-child(4):nth-last-child(2),.pc .ccard.wide{grid-column:span 3;flex-direction:column;align-items:stretch}
+.pc .ccard.wide .pimg{width:auto;aspect-ratio:1.25}
+.pc .ccard .pimg{aspect-ratio:1.9}
+.pc .ccard:nth-child(4):nth-last-child(2) .pimg,.pc .ccard.wide .pimg{aspect-ratio:2.9}
+.pc .ccard .pimg .gl{max-width:300px}
+/* product: two columns */
+.pc .screen[data-name="product"] .scroll{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);padding:0;align-items:start}
+.pc .screen[data-name="product"] .phero{position:sticky;top:0;height:var(--apph)}
+.pc .screen[data-name="product"] .slide{padding:40px 8%}
+.pc .screen[data-name="product"] .psheet{margin-top:0;border-radius:0;padding:56px 48px 150px;gap:16px}
+.pc .screen[data-name="product"] .psheet h1{font-size:40px}
+.pc .screen[data-name="product"] .floatbar{right:auto;width:calc(53.5% - 28px);top:16px}
+.pc .buybar{left:auto;right:max(24px,calc((100% - 1160px)/2 + 20px));bottom:24px;width:420px;border-radius:22px;padding:12px;box-shadow:var(--shadow-lg)}
+.pc .screen[data-name="product"] .buybar{right:48px}
+.pc .center-bar .buybar{left:0;right:0;bottom:0;width:auto;border-radius:0;padding:14px max(20px,calc(50% - 320px)) 18px;box-shadow:0 -1px 0 var(--line)}
+/* cart: list + summary */
+.pc .screen[data-name="cart"] .scroll{display:grid;grid-template-columns:minmax(0,1fr) 380px;column-gap:8px;align-content:start;align-items:start}
+.pc .screen[data-name="cart"] .nav,.pc .screen[data-name="cart"] .empty{grid-column:1/-1}
+.pc .screen[data-name="cart"] .summary{margin:0 20px 0 0;position:sticky;top:20px}
+.pc .screen[data-name="cart"] .buybar{display:none}
+/* centered single-column pages */
+.pc .form,.pc .steps,.pc .screen[data-name="confirm"] .scroll>*,.pc .screen[data-name="tracking"] .scroll>*,.pc .screen[data-name="account"] .scroll>*,.pc .screen[data-name="search"] .scroll>*{max-width:680px;margin-inline:auto;width:calc(100% - 40px)}
+.pc .form{width:100%}
+.pc .screen[data-name="tracking"] .results,.pc .screen[data-name="search"] .results,.pc .screen[data-name="search"] .chips{padding:0}
+.pc .welcome{display:grid;grid-template-columns:1.25fr 1fr;grid-template-rows:1fr auto auto auto 1fr;column-gap:56px;padding:40px 7%}
+.pc .welcome .stagegl{grid-row:1/-1}
+.pc .welcome h1{grid-column:2;grid-row:2;font-size:56px}
+.pc .welcome p{grid-column:2;grid-row:3;font-size:17px;max-width:440px}
+.pc .welcome .btn{grid-column:2;grid-row:4;justify-self:start;width:auto;padding:0 32px}
+.pc .welcome .foot{position:absolute;bottom:28px;left:0;right:0}
+.pc .splash .gl{width:62%;left:19%;bottom:60px}
+.pc .toast{left:0;right:0;margin-inline:auto;max-width:440px}
+@media (max-width:760px){.device.pc{width:100%}}
+
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 </style>
 
-<div class="stage">
+<div class="modebar" id="modebar" role="group" aria-label="Vista del prototipo"></div>
+<div class="stage" id="stage">
   <aside class="aside">
     <div class="logo" id="asideLogo"></div>
     <h1>E-commerce de lentes</h1>
@@ -423,6 +523,8 @@ h2.sec{font-family:var(--f-display);font-size:20px;letter-spacing:-.02em;margin:
         <svg viewBox="0 0 27 12"><rect x=".5" y=".5" width="22" height="11" rx="3.2" fill="none" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="19" height="8" rx="2"/><rect x="24" y="4" width="2" height="4" rx="1" opacity=".45"/></svg>
       </span>
     </div>
+    <div class="chrome" aria-hidden="true"><span class="lights"><i></i><i></i><i></i></span><span class="url" id="url"></span></div>
+    <header class="webbar" id="webbar"></header>
     <div id="app"></div>
     <div class="homebar"></div>
   </div>
@@ -630,10 +732,10 @@ SCREENS.home = {
     const best = [...P].sort((a,b) => b.reviews - a.reviews).slice(0,6);
     const picks = ['rb-aviator','vogue-cat','ok-radar','lp-clarity'].map(byId);
     return `<div class="scroll">
-    <div class="nav"><div style="flex:1">${logo()}<div class="tagline">Ver bien, es vivir mejor.</div></div>
+    <div class="nav home-nav"><div style="flex:1">${logo()}<div class="tagline">Ver bien, es vivir mejor.</div></div>
       <button class="ibtn" data-a="go" data-to="search" aria-label="Buscar">${I.search}</button>
       <button class="ibtn" data-a="tab" data-to="favorites" aria-label="Favoritos">${I.heart}</button>${badgeBtn()}</div>
-    <div class="pad"><button class="search" data-a="go" data-to="search">${I.search}<span>Buscar lentes, marcas…</span></button></div>
+    <div class="pad mobile-only"><button class="search" data-a="go" data-to="search">${I.search}<span>Buscar lentes, marcas…</span></button></div>
     <section class="hero">
       <div><h2>Estilo, protección y <em>claridad</em> en cada mirada</h2><p>Lentes de alta calidad, con diseño moderno y la mejor protección UV.</p></div>
       ${glasses('wayfarer',{frame:'#0D1324',a:'#3D73E0',b:'#0A1640'})}
@@ -730,7 +832,7 @@ SCREENS.product = {
       <button class="ibtn glass" data-a="back" aria-label="Atrás">${I.back}</button><span class="sp"></span>
       <button class="ibtn glass fav-detail ${S.favs.has(p.id)?'on':''}" data-a="fav" data-id="${p.id}" aria-label="Favorito">${I.heart}</button>
       <button class="ibtn glass" data-a="share" aria-label="Compartir">${I.share}</button>
-      <span class="ibtn glass" style="padding:0">${badgeBtn()}</span>
+      <span class="ibtn glass cartslot" style="padding:0">${badgeBtn()}</span>
     </div>
     <div class="buybar">
       <div class="stepper"><button data-a="pq" data-d="-1" aria-label="Menos">${I.minus}</button><b id="pq">${prm.q}</b><button data-a="pq" data-d="1" aria-label="Más">${I.plus}</button></div>
@@ -739,7 +841,7 @@ SCREENS.product = {
   },
   mount: (el, prm) => {
     const p = byId(prm.id), car = el.querySelector('#car');
-    el.classList.add('enter');
+    if (!prm._shared) el.classList.add('enter');
     requestAnimationFrame(() => { car.scrollLeft = prm.v * car.clientWidth; });
     let raf;
     car.addEventListener('scroll', () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => {
@@ -770,17 +872,17 @@ SCREENS.cart = {
         <div class="info"><h3>${p.name}</h3><span class="meta">${v.name} · ${CATS[p.cat].name}</span><b class="price">${fmt(p.price)}</b>
         <div class="row"><div class="stepper sm"><button data-a="cq" data-k="${k}" data-d="-1" aria-label="Menos">${I.minus}</button><b>${i.q}</b><button data-a="cq" data-k="${k}" data-d="1" aria-label="Más">${I.plus}</button></div></div></div>
         <button class="del" data-a="del" data-k="${k}" aria-label="Eliminar">${I.trash}</button></div>`; }).join('')}</div>
-      <div class="summary" id="sum">${summary()}</div></div>
+      <div class="summary" id="sum">${summary(true)}</div></div>
       <div class="buybar"><button class="btn block" data-a="go" data-to="shipping">Proceder al pago</button></div>`;
   },
 };
-const summary = () => `<h3>Resumen</h3>
+const summary = (btn) => `<h3>Resumen</h3>
   <div class="r"><span>Subtotal</span><span>${fmt(subtotal())}</span></div>
   <div class="r"><span>Envío</span><span class="${shipCost()?'':'free'}">${shipCost()?fmt(shipCost()):'Gratis'}</span></div>
-  <div class="r tot"><span>Total</span><span>${fmt(subtotal()+shipCost())}</span></div>`;
+  <div class="r tot"><span>Total</span><span>${fmt(subtotal()+shipCost())}</span></div>${btn ? '<button class="btn block pc-only" data-a="go" data-to="shipping">Proceder al pago</button>' : ''}`;
 
 SCREENS.shipping = {
-  bar:true,
+  bar:true, center:true,
   render: prm => { const a = S.addr; return `<div class="scroll"><div class="nav">${back()}<h1>Dirección de envío</h1></div>
     ${prm.edit ? '' : steps(1)}
     <form class="form" id="f" novalidate>
@@ -797,7 +899,7 @@ SCREENS.shipping = {
 };
 
 SCREENS.payment = {
-  bar:true,
+  bar:true, center:true,
   render: prm => { const c = S.card; return `<div class="scroll"><div class="nav">${back()}<h1>${prm.edit?'Métodos de pago':'Método de pago'}</h1></div>
     ${prm.edit ? '' : steps(2)}
     <div class="form">
@@ -918,7 +1020,8 @@ let busy = false;
 function build(route){
   const def = SCREENS[route.name]; route.params ||= {};
   const el = document.createElement('section');
-  el.className = 'screen' + (def.tab ? ' with-tab' : '') + (def.bar ? ' with-bar' : '');
+  el.className = 'screen' + (def.tab ? ' with-tab' : '') + (def.bar ? ' with-bar' : '') + (def.center ? ' center-bar' : '');
+  el.dataset.name = route.name;
   el.innerHTML = def.render(route.params);
   app.appendChild(el);
   def.mount?.(el, route.params);
@@ -929,35 +1032,161 @@ function build(route){
   return el;
 }
 const top = () => stack[stack.length - 1];
+const device = document.getElementById('device');
 const saveScroll = r => { const sc = r?.el?.querySelector('.scroll'); if (sc) r.scroll = sc.scrollTop; };
-const anim = (el, kf, o={}) => el.animate(kf, {duration:DUR, easing:EASE, fill:'both', ...o}).finished;
+const isPC = () => device.classList.contains('pc');
+
+/* spring physics -> CSS linear() easing, so motion settles like iOS instead of stopping on a fixed curve */
+function spring(stiffness, damping){
+  let x = 0, v = 0; const dt = 1/240, pts = [0]; let t = 0, still = 0;
+  while (t < 2 && still < 20) { const f = -stiffness*(x-1) - damping*v; v += f*dt; x += v*dt; t += dt; pts.push(x); still = (Math.abs(1-x) < .0008 && Math.abs(v) < .01) ? still+1 : 0; }
+  const n = 48, out = []; for (let i = 0; i <= n; i++) out.push(+pts[Math.round(i*(pts.length-1)/n)].toFixed(4));
+  out[n] = 1;
+  return {easing:`linear(${out.join(',')})`, duration:Math.round(t*1000)};
+}
+const LINEAR_OK = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('transition-timing-function','linear(0, 1)');
+const SPR = LINEAR_OK ? {
+  push: spring(230, 30.5), fade: spring(200, 28.5), fly: spring(210, 23), soft: spring(160, 26),
+} : { push:{easing:EASE,duration:560}, fade:{easing:EASE,duration:460}, fly:{easing:EASE,duration:620}, soft:{easing:EASE,duration:520} };
+const go = (el, kf, kind='push', o={}) => el.animate(kf, {...(reduce ? {duration:1, easing:'linear'} : SPR[kind]), fill:'both', ...o}).finished.catch(() => {});
+const frames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+const clean = (...els) => els.forEach(e => e && e.getAnimations().forEach(a => a.cancel()));
+function shade(before, from, to, kind){
+  const d = document.createElement('div'); d.className = 'shade'; app.insertBefore(d, before);
+  go(d, [{opacity:from},{opacity:to}], kind); return d;
+}
+function enterStagger(el){
+  if (reduce) return;
+  el.querySelectorAll('.grid, .hscroll, .cgrid, .items, .menu, .timeline').forEach(g => [...g.children].slice(0,8).forEach((n,i) =>
+    n.animate([{opacity:0,transform:'translateY(18px)'},{opacity:1,transform:'none'}], {...SPR.soft, delay:90+i*40, fill:'backwards'})));
+}
+
+async function fly(src, el, prm){
+  const slides = el.querySelectorAll('.slide .gl'); const dst = slides[prm.v||0];
+  if (!src || !dst) return;
+  const dr = device.getBoundingClientRect(), a = src.getBoundingClientRect(), b = dst.getBoundingClientRect();
+  if (!a.width || !b.width) return;
+  const clone = src.cloneNode(true); clone.classList.add('flyer');
+  clone.style.width = a.width + 'px'; clone.style.height = a.height + 'px';
+  device.appendChild(clone); dst.style.visibility = 'hidden'; src.style.visibility = 'hidden';
+  const s = b.width / a.width;
+  await go(clone, [
+    {transform:`translate(${a.left-dr.left}px,${a.top-dr.top}px) scale(1)`},
+    {transform:`translate(${b.left-dr.left}px,${b.top-dr.top}px) scale(${s})`}], 'fly');
+  dst.style.visibility = ''; src.style.visibility = ''; clone.remove();
+}
+
 const nav = {
-  push(name, params){
+  async push(name, params, opts={}){
     if (busy) return; busy = true;
     const prev = top(); saveScroll(prev);
-    const r = {name, params}; stack.push(r); const el = build(r); el.classList.add('pushed');
-    anim(prev.el, [{transform:'translateX(0)',filter:'brightness(1)'},{transform:'translateX(-28%)',filter:'brightness(.9)'}]);
-    anim(el, [{transform:'translateX(100%)'},{transform:'translateX(0)'}]).then(() => { prev.el.remove(); el.classList.remove('pushed'); el.getAnimations().forEach(a => a.cancel()); busy = false; });
+    const r = {name, params}; if (opts.src) r.params._shared = true;
+    stack.push(r); const el = build(r);
+    el.style.opacity = '0';
+    await frames(); el.style.opacity = '';
+    updateChrome();
+    let sh, jobs;
+    if (opts.src) {
+      jobs = [
+        go(prev.el, [{opacity:1,transform:'scale(1)'},{opacity:0,transform:'scale(.965)'}], 'fade'),
+        go(el, [{opacity:0,transform:'translateY(14px)'},{opacity:1,transform:'none'}], 'fade'),
+        fly(opts.src, el, r.params),
+      ];
+    } else if (isPC()) {
+      jobs = [
+        go(prev.el, [{opacity:1,transform:'none'},{opacity:0,transform:'translateY(-10px)'}], 'fade'),
+        go(el, [{opacity:0,transform:'translateY(22px)'},{opacity:1,transform:'none'}], 'fade'),
+      ];
+      enterStagger(el);
+    } else {
+      el.classList.add('pushed'); sh = shade(el, 0, .14, 'push');
+      jobs = [
+        go(prev.el, [{transform:'translate3d(0,0,0)'},{transform:'translate3d(-30%,0,0)'}]),
+        go(el, [{transform:'translate3d(100%,0,0)'},{transform:'translate3d(0,0,0)'}]),
+      ];
+    }
+    await Promise.all(jobs);
+    prev.el.remove(); sh?.remove(); el.classList.remove('pushed'); clean(el);
+    delete r.params._shared; busy = false;
   },
-  pop(){
+  async pop(){
     if (busy || stack.length < 2) return; busy = true;
     const cur = stack.pop(), prev = top();
-    const el = build(prev); app.insertBefore(el, cur.el); cur.el.classList.add('pushed');
-    anim(el, [{transform:'translateX(-28%)',filter:'brightness(.9)'},{transform:'translateX(0)',filter:'brightness(1)'}]).then(() => el.getAnimations().forEach(a => a.cancel()));
-    anim(cur.el, [{transform:'translateX(0)'},{transform:'translateX(100%)'}]).then(() => { cur.el.remove(); busy = false; });
+    const el = build(prev); app.insertBefore(el, cur.el);
+    el.style.visibility = 'hidden'; await frames(); el.style.visibility = '';
+    updateChrome();
+    let sh, jobs;
+    if (isPC()) {
+      jobs = [
+        go(cur.el, [{opacity:1,transform:'none'},{opacity:0,transform:'translateY(16px)'}], 'fade'),
+        go(el, [{opacity:0,transform:'translateY(-10px)'},{opacity:1,transform:'none'}], 'fade'),
+      ];
+    } else {
+      cur.el.classList.add('pushed'); sh = shade(cur.el, .14, 0, 'push');
+      jobs = [
+        go(el, [{transform:'translate3d(-30%,0,0)'},{transform:'translate3d(0,0,0)'}]),
+        go(cur.el, [{transform:'translate3d(0,0,0)'},{transform:'translate3d(100%,0,0)'}]),
+      ];
+    }
+    await Promise.all(jobs);
+    cur.el.remove(); sh?.remove(); clean(el); busy = false;
   },
-  reset(name, params, how='fade'){
+  async reset(name, params, how='fade'){
     if (busy) return;
     const cur = top();
     if (cur && cur.name === name && stack.length === 1 && how === 'fade') { cur.el.querySelector('.scroll')?.scrollTo({top:0, behavior:'smooth'}); return; }
     busy = true; stack.length = 0;
     const r = {name, params}; stack.push(r); const el = build(r);
-    const kf = how === 'zoom' ? [{opacity:0,transform:'scale(1.06)'},{opacity:1,transform:'none'}] : [{opacity:0,transform:'translateY(10px)'},{opacity:1,transform:'none'}];
-    anim(el, kf, {duration: reduce ? 1 : 420}).then(() => { el.getAnimations().forEach(a => a.cancel()); cur?.el.remove(); busy = false; });
-    if (cur) anim(cur.el, [{opacity:1},{opacity:0}], {duration: reduce ? 1 : 300});
+    el.style.opacity = '0'; await frames(); el.style.opacity = '';
+    updateChrome();
+    const kin = how === 'zoom' ? [{opacity:0,transform:'scale(1.04)'},{opacity:1,transform:'none'}] : [{opacity:0,transform:'translateY(12px) scale(.995)'},{opacity:1,transform:'none'}];
+    const jobs = [go(el, kin, 'fade')];
+    if (cur) jobs.push(go(cur.el, [{opacity:1,transform:'none'},{opacity:0,transform: how === 'zoom' ? 'scale(.97)' : 'none'}], 'fade', {duration: reduce ? 1 : 260, easing:'ease-out'}));
+    if (how === 'fade') enterStagger(el);
+    await Promise.all(jobs);
+    cur?.el.remove(); clean(el); busy = false;
   },
-  replace(name, params){ nav.reset(name, params, 'zoom'); },
+  replace(name, params){ return nav.reset(name, params, 'zoom'); },
 };
+
+/* ---------- PC chrome: browser bar + web header ---------- */
+const PATHS = {splash:'', welcome:'', home:'', categories:'categorias', list:p => p.cat === 'todos' ? 'coleccion' : p.cat, product:p => 'producto/' + p.id, cart:'carrito',
+  shipping:p => p.edit ? 'cuenta/direcciones' : 'checkout/envio', payment:p => p.edit ? 'cuenta/pagos' : 'checkout/pago', confirm:p => 'pedido/' + (p.no||''), tracking:p => 'pedido/' + (p.no || S.orders[0].no) + '/seguimiento',
+  favorites:'favoritos', account:'cuenta', search:'buscar'};
+function updateChrome(){
+  const r = top(); if (!r) return;
+  const pth = PATHS[r.name]; const path = typeof pth === 'function' ? pth(r.params||{}) : pth;
+  document.getElementById('url').innerHTML = `${sv('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>')}<b>lenspro.do</b>/${esc(path)}`;
+  const tab = SCREENS[r.name].tab || '';
+  document.querySelectorAll('#webbar .links button').forEach(b => b.classList.toggle('on', b.dataset.to === tab));
+  document.getElementById('webbar').style.visibility = (r.name === 'splash' || r.name === 'welcome') ? 'hidden' : '';
+}
+function buildWebbar(){
+  document.getElementById('webbar').innerHTML = `${logo()}
+    <nav class="links">${[['home','Inicio'],['categories','Categorías'],['favorites','Favoritos'],['account','Mi cuenta']].map(([k,l]) => `<button data-a="tab" data-to="${k}">${l}</button>`).join('')}</nav>
+    <button class="search wsearch" data-a="go" data-to="search">${I.search}<span>Buscar lentes, marcas…</span></button>
+    <button class="ibtn" data-a="tab" data-to="favorites" aria-label="Favoritos">${I.heart}</button>${badgeBtn()}`;
+}
+
+/* ---------- mode switch ---------- */
+const stageEl = document.getElementById('stage');
+const MODE_ICONS = {mobile:sv('<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>'), pc:sv('<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>')};
+function paintModebar(){
+  const m = isPC() ? 'pc' : 'mobile';
+  document.getElementById('modebar').innerHTML = [['mobile','Móvil'],['pc','PC']].map(([k,l]) => `<button type="button" data-mode="${k}" class="${m===k?'on':''}" aria-pressed="${m===k}">${MODE_ICONS[k]}${l}</button>`).join('');
+}
+function applyMode(m){
+  device.classList.toggle('pc', m === 'pc'); stageEl.classList.toggle('pc', m === 'pc');
+  paintModebar(); updateChrome();
+  requestAnimationFrame(() => document.querySelectorAll('.seg').forEach(placePill));
+}
+function setMode(m){
+  if ((m === 'pc') === isPC() || busy) return;
+  try { localStorage.setItem('lp-mode', m); } catch(e) {}
+  if (document.startViewTransition && !reduce) document.startViewTransition(() => applyMode(m));
+  else applyMode(m);
+}
+document.getElementById('modebar').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
 
 function placePill(seg){
   const on = seg.querySelector('button.on'), pill = seg.querySelector('.seg-pill');
@@ -1006,7 +1235,8 @@ function paintAside(){
 
 /* ---------- actions ---------- */
 const A = {
-  go: t => { const d = {...t.dataset}; const to = d.to; delete d.a; delete d.to; if (d.v !== undefined) d.v = +d.v; nav.push(to, d); },
+  go: t => { const d = {...t.dataset}; const to = d.to; delete d.a; delete d.to; if (d.v !== undefined) d.v = +d.v;
+    const src = to === 'product' ? t.querySelector('.gl') : null; nav.push(to, d, {src}); },
   back: () => nav.pop(),
   tab: t => nav.reset(t.dataset.to),
   fav: t => {
@@ -1095,12 +1325,12 @@ const A = {
   qchip: t => top().el._q?.(t.textContent),
 };
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-a]'); if (!t || !app.contains(t)) return;
+  const t = e.target.closest('[data-a]'); if (!t || !device.contains(t)) return;
   e.preventDefault();
   A[t.dataset.a]?.(t, e);
 });
 function refreshCart(){
-  const el = top().el; const s = el.querySelector('#sum'); if (s) s.innerHTML = summary();
+  const el = top().el; const s = el.querySelector('#sum'); if (s) s.innerHTML = summary(true);
   const n = cartCount(); const cn = el.querySelector('#cn'); if (cn) cn.textContent = `${n} ${n===1?'artículo':'artículos'}`;
   updateBadges();
 }
@@ -1119,6 +1349,10 @@ document.getElementById('restart').onclick = () => { S = seed(); nav.reset('spla
 document.getElementById('themeBtn').onclick = () => { setTheme(isDark() ? 'light' : 'dark'); if (top().name === 'account') top().el.innerHTML = SCREENS.account.render(), top().el.querySelectorAll('.seg').forEach(placePill); };
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', paintAside);
 paintAside();
-const first = {name:'splash', params:{}}; stack.push(first); build(first);
+buildWebbar();
+let startMode = 'mobile'; try { startMode = localStorage.getItem('lp-mode') || 'mobile'; } catch(e) {}
+if (innerWidth < 760) startMode = 'mobile';
+applyMode(startMode);
+const first = {name:'splash', params:{}}; stack.push(first); build(first); updateChrome();
 })();
 </script>
