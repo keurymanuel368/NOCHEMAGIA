@@ -1,0 +1,2695 @@
+diff --git a/pagos-mixtos.sql b/pagos-mixtos.sql
+new file mode 100644
+index 0000000..0009a9f
+--- /dev/null
++++ b/pagos-mixtos.sql
+@@ -0,0 +1,64 @@
++-- ============================================================
++-- VentaTech: pagos mixtos y tipo de tarjeta (débito / crédito)
++-- OBLIGATORIO: pegar en Supabase > SQL Editor > Run (una sola vez).
++-- Se puede volver a ejecutar sin problema.
++-- ============================================================
++
++-- 1) Cómo se pagó cada venta: una fila por método.
++--    Ej.: venta de RD$ 800 = efectivo 300 + tarjeta débito 500.
++create table if not exists public.venta_pagos (
++  id uuid primary key default gen_random_uuid(),
++  venta_id uuid not null references public.ventas(id) on delete cascade,
++  metodo text not null check (metodo in ('efectivo', 'tarjeta', 'transferencia')),
++  tipo_tarjeta text check (tipo_tarjeta in ('debito', 'credito')),
++  monto numeric(12, 2) not null check (monto > 0),
++  created_at timestamptz not null default now(),
++  constraint venta_pagos_tipo_solo_tarjeta check (metodo = 'tarjeta' or tipo_tarjeta is null)
++);
++
++create index if not exists venta_pagos_venta_id_idx on public.venta_pagos (venta_id);
++
++-- Seguridad: cada usuario ve los pagos de las ventas que ya puede ver
++-- (misma empresa). Las escrituras las hace solo el servidor.
++alter table public.venta_pagos enable row level security;
++
++drop policy if exists venta_pagos_select on public.venta_pagos;
++create policy venta_pagos_select on public.venta_pagos
++  for select to authenticated
++  using (exists (select 1 from public.ventas v where v.id = venta_pagos.venta_id));
++
++revoke insert, update, delete on public.venta_pagos from anon, authenticated;
++grant select on public.venta_pagos to authenticated;
++grant all on public.venta_pagos to service_role;
++
++-- 2) Permitir metodo_pago = 'mixto' en ventas.
++do $$
++declare
++  r record;
++  tipo text;
++  tipo_udt text;
++begin
++  select data_type, udt_name into tipo, tipo_udt
++  from information_schema.columns
++  where table_schema = 'public' and table_name = 'ventas' and column_name = 'metodo_pago';
++
++  if tipo = 'USER-DEFINED' then
++    -- metodo_pago es un enum: se le agrega el valor.
++    execute format('alter type %I add value if not exists %L', tipo_udt, 'mixto');
++  else
++    -- metodo_pago es texto: se reemplaza el CHECK que limita los valores.
++    for r in
++      select conname
++      from pg_constraint
++      where conrelid = 'public.ventas'::regclass
++        and contype = 'c'
++        and pg_get_constraintdef(oid) ilike '%metodo_pago%'
++    loop
++      execute format('alter table public.ventas drop constraint %I', r.conname);
++    end loop;
++
++    alter table public.ventas
++      add constraint ventas_metodo_pago_check
++      check (metodo_pago in ('efectivo', 'tarjeta', 'transferencia', 'fiado', 'mixto')) not valid;
++  end if;
++end $$;
+diff --git a/src/app/actions/pos-actions.ts b/src/app/actions/pos-actions.ts
+index b88225f..0fc219c 100644
+--- a/src/app/actions/pos-actions.ts
++++ b/src/app/actions/pos-actions.ts
+@@ -2,7 +2,9 @@
+ 
+ import { revalidatePath } from "next/cache";
+ import { createClient } from "@/lib/supabase/server";
++import { createAdminClient } from "@/lib/supabase/admin";
+ import type { MetodoPago, CartLine } from "@/lib/pos/types";
++import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
+ 
+ export type PosActionState = { error?: string; success?: string };
+ 
+@@ -11,6 +13,8 @@ export async function abrirCajaAction(montoInicial: number): Promise<PosActionSt
+   const { error } = await supabase.rpc("abrir_caja", { p_monto_inicial: montoInicial });
+   if (error) return { error: error.message };
+   revalidatePath("/pos");
++  revalidatePath("/caja");
++  revalidatePath("/");
+   return { success: "Caja abierta" };
+ }
+ 
+@@ -19,6 +23,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
+   const { error } = await supabase.rpc("cerrar_caja", { p_monto_final: montoFinal });
+   if (error) return { error: error.message };
+   revalidatePath("/pos");
++  revalidatePath("/caja");
++  revalidatePath("/");
+   return { success: "Caja cerrada" };
+ }
+ 
+@@ -29,6 +35,68 @@ export type ItemVentaInput = {
+   cantidad: number;
+ };
+ 
++const METODOS_PARTE = ["efectivo", "tarjeta", "transferencia"] as const;
++
++/** Valida las partes de un pago mixto antes de registrar la venta. */
++function validarPartes(pagos: PagoParte[] | undefined): string | null {
++  if (!pagos || pagos.length < 2) return "Un pago mixto necesita al menos dos métodos";
++  for (const p of pagos) {
++    if (!METODOS_PARTE.includes(p.metodo)) return "Método no permitido en un pago mixto";
++    if (!(Number(p.monto) > 0)) return "Cada parte del pago debe ser mayor que cero";
++    if (p.metodo === "tarjeta" && p.tipoTarjeta !== "debito" && p.tipoTarjeta !== "credito") {
++      return "Indica si la tarjeta es de débito o de crédito";
++    }
++  }
++  return null;
++}
++
++/**
++ * Ajusta las partes al total que confirmó el servidor (puede variar unos
++ * pesos si un precio cambió justo antes de cobrar). La diferencia se carga
++ * al efectivo, que es lo que el cajero cobra o devuelve en el momento.
++ */
++function ajustarPartes(pagos: PagoParte[], total: number): PagoParte[] {
++  const partes = pagos.map((p) => ({ ...p, monto: centavos(Number(p.monto)) }));
++  const diferencia = centavos(total - partes.reduce((s, p) => s + p.monto, 0));
++  if (diferencia === 0) return partes;
++
++  // La parte más grande es la que se usó como método al registrar la venta.
++  const mayor = partes.reduce((m, p, i) => (p.monto > partes[m].monto ? i : m), 0);
++  let idx = partes.findIndex((p) => p.metodo === "efectivo");
++  if (idx < 0) idx = mayor;
++  const nuevoMonto = centavos(partes[idx].monto + diferencia);
++  if (nuevoMonto <= 0) return [{ ...partes[mayor], monto: total }];
++  partes[idx] = { ...partes[idx], monto: nuevoMonto };
++  return partes;
++}
++
++/** Guarda cómo se pagó la venta (tarjeta débito/crédito o pago mixto). */
++async function guardarPartes(ventaId: string, partes: PagoParte[]): Promise<string | null> {
++  try {
++    const admin = createAdminClient();
++    // Borrar y volver a insertar: si una venta offline se reenvía, el
++    // servidor devuelve la misma venta y las partes no se duplican.
++    const { error: errorBorrar } = await admin.from("venta_pagos").delete().eq("venta_id", ventaId);
++    if (errorBorrar) return errorBorrar.message;
++    const { error: errorInsertar } = await admin.from("venta_pagos").insert(
++      partes.map((p) => ({
++        venta_id: ventaId,
++        metodo: p.metodo,
++        tipo_tarjeta: p.metodo === "tarjeta" ? p.tipoTarjeta ?? null : null,
++        monto: p.monto,
++      }))
++    );
++    if (errorInsertar) return errorInsertar.message;
++    if (partes.length > 1) {
++      const { error } = await admin.from("ventas").update({ metodo_pago: "mixto" }).eq("id", ventaId);
++      if (error) return error.message;
++    }
++    return null;
++  } catch (e) {
++    return e instanceof Error ? e.message : "Error guardando el desglose del pago";
++  }
++}
++
+ export async function registrarVentaAction(input: {
+   items: ItemVentaInput[];
+   clienteId: string | null;
+@@ -37,6 +105,10 @@ export async function registrarVentaAction(input: {
+   ncfTipo?: string | null;
+   cuponId?: string | null;
+   localId?: string | null;
++  /** Solo para tarjeta: débito o crédito. */
++  tipoTarjeta?: TipoTarjeta | null;
++  /** Solo para pago mixto: cuánto se pagó con cada método. */
++  pagos?: PagoParte[];
+ }): Promise<
+   PosActionState & {
+     ventaId?: string;
+@@ -47,13 +119,32 @@ export async function registrarVentaAction(input: {
+     descuento?: number;
+     total?: number;
+     items?: { nombre: string; cantidad: number; subtotal: number }[];
++    /** Partes del pago tal como quedaron guardadas (tarjeta o mixto). */
++    pagos?: PagoParte[];
++    /** La venta se guardó, pero no el desglose del pago. */
++    avisoPagos?: string;
+   }
+ > {
++  const esMixto = input.metodoPago === "mixto";
++  if (esMixto) {
++    const error = validarPartes(input.pagos);
++    if (error) return { error };
++  }
++  // Una venta con tarjeta sin tipo (p. ej. una venta offline hecha antes de
++  // esta versión) se acepta igual y se cuenta como "Tarjeta (sin tipo)".
++
++  // La venta se registra con el método de la parte más grande (un método
++  // que la base de datos ya conoce); después se marca como "mixto" y se
++  // guardan las partes.
++  const metodoRpc: MetodoPago = esMixto
++    ? input.pagos!.reduce((m, p) => (Number(p.monto) > Number(m.monto) ? p : m)).metodo
++    : input.metodoPago;
++
+   const supabase = await createClient();
+   const { data, error } = await supabase.rpc("registrar_venta", {
+     p_items: input.items,
+     p_cliente_id: input.clienteId,
+-    p_metodo_pago: input.metodoPago,
++    p_metodo_pago: metodoRpc,
+     p_descuento: input.descuento,
+     p_ncf_tipo: input.ncfTipo || null,
+     p_cupon_id: input.cuponId || null,
+@@ -75,8 +166,22 @@ export async function registrarVentaAction(input: {
+       .eq("venta_id", ventaId),
+   ]);
+ 
++  let pagos: PagoParte[] | undefined;
++  let avisoPagos: string | undefined;
++  if (venta && (esMixto || input.metodoPago === "tarjeta")) {
++    const total = Number(venta.total);
++    pagos = esMixto
++      ? ajustarPartes(input.pagos!, total)
++      : [{ metodo: "tarjeta", tipoTarjeta: input.tipoTarjeta ?? null, monto: total }];
++    const errorPartes = await guardarPartes(ventaId, pagos);
++    if (errorPartes) {
++      avisoPagos = `La venta se guardó, pero no el desglose del pago (${errorPartes}). Revisa que se haya ejecutado el SQL de pagos mixtos.`;
++    }
++  }
++
+   revalidatePath("/pos");
+   revalidatePath("/");
++  revalidatePath("/caja");
+   return {
+     success: "Venta registrada",
+     ventaId,
+@@ -91,6 +196,8 @@ export async function registrarVentaAction(input: {
+       cantidad: Number(i.cantidad),
+       subtotal: Number(i.subtotal),
+     })),
++    pagos,
++    avisoPagos,
+   };
+ }
+ 
+diff --git a/src/app/actions/reportes-actions.ts b/src/app/actions/reportes-actions.ts
+index 2d1f696..d8e46f5 100644
+--- a/src/app/actions/reportes-actions.ts
++++ b/src/app/actions/reportes-actions.ts
+@@ -3,6 +3,8 @@
+ import { createClient } from "@/lib/supabase/server";
+ import { getUsuarioActual } from "@/lib/get-usuario-actual";
+ import { rangoDiasRD, ZONA_NEGOCIO } from "@/lib/fecha-rd";
++import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
++import { sumarDesglose } from "@/lib/pagos";
+ 
+ export type ReporteResultado = { columns: string[]; rows: (string | number)[][] };
+ 
+@@ -134,16 +136,19 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+   const supabase = await createClient();
+   const { desdeISO, hastaISO } = rango(desde, hasta);
+ 
+-  const [{ data: ventas }, { data: abonos }, { data: gastos }] = await Promise.all([
+-    supabase.from("ventas").select("total, metodo_pago").eq("estado", "completada").gte("fecha", desdeISO).lt("fecha", hastaISO),
+-    supabase.from("abonos").select("monto").gte("fecha", desdeISO).lt("fecha", hastaISO),
+-    supabase.from("gastos").select("monto").eq("activo", true).gte("fecha", desdeISO).lt("fecha", hastaISO),
++  // Todas las filas del período (Supabase corta cada consulta en 1000).
++  const periodo = { desde: desdeISO, hasta: hastaISO };
++  const [ventas, abonos, gastos] = await Promise.all([
++    ventasCompletadas(supabase, periodo),
++    abonosDelRango(supabase, periodo),
++    gastosDelRango(supabase, periodo),
+   ]);
+ 
+-  const ventasTotal = (ventas ?? []).reduce((s, v) => s + Number(v.total), 0);
+-  const fiadoTotal = (ventas ?? []).filter((v) => v.metodo_pago === "fiado").reduce((s, v) => s + Number(v.total), 0);
+-  const abonosTotal = (abonos ?? []).reduce((s, a) => s + Number(a.monto), 0);
+-  const gastosTotal = (gastos ?? []).reduce((s, g) => s + Number(g.monto), 0);
++  const desglose = sumarDesglose(ventas);
++  const ventasTotal = ventas.reduce((s, v) => s + v.total, 0);
++  const fiadoTotal = desglose.fiado;
++  const abonosTotal = abonos.reduce((s, a) => s + a.monto, 0);
++  const gastosTotal = gastos.reduce((s, g) => s + g.monto, 0);
+   const ingresosReales = ventasTotal - fiadoTotal + abonosTotal;
+   const utilidad = ingresosReales - gastosTotal;
+ 
+@@ -151,6 +156,11 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+     columns: ["Concepto", "Monto"],
+     rows: [
+       ["Ventas totales", ventasTotal.toFixed(2)],
++      ["  Efectivo", desglose.efectivo.toFixed(2)],
++      ["  Tarjeta débito", desglose.tarjeta_debito.toFixed(2)],
++      ["  Tarjeta crédito", desglose.tarjeta_credito.toFixed(2)],
++      ...(desglose.tarjeta !== 0 ? [["  Tarjeta (sin tipo)", desglose.tarjeta.toFixed(2)]] : []),
++      ["  Transferencia", desglose.transferencia.toFixed(2)],
+       ["Ventas a fiado", fiadoTotal.toFixed(2)],
+       ["Abonos cobrados", abonosTotal.toFixed(2)],
+       ["Ingresos reales", ingresosReales.toFixed(2)],
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 863859a..a41c07d 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -58,13 +58,24 @@ export default async function Home() {
+             accent="from-blue-400 to-blue-600"
+             label="Ventas del día"
+             value={formatMoney(stats.ventasHoyTotal)}
+-            sub={`${turnoTexto} · ${stats.ventasHoyCount} ventas · efectivo ${formatMoney(stats.ventasHoyEfectivo)} · ${anteriorTexto} ${formatMoney(stats.ventasAyerTotal)}`}
++            sub={[
++              turnoTexto,
++              `${stats.ventasHoyCount} ventas`,
++              `efectivo ${formatMoney(stats.ventasHoyEfectivo)}`,
++              `tarjeta ${formatMoney(stats.ventasHoyTarjeta)}`,
++              `transf. ${formatMoney(stats.ventasHoyTransferencia)}`,
++              ...(stats.ventasHoyFiado > 0 ? [`fiado ${formatMoney(stats.ventasHoyFiado)}`] : []),
++              ...(stats.ventasHoyDevoluciones > 0
++                ? [`devoluciones −${formatMoney(stats.ventasHoyDevoluciones)}`]
++                : []),
++              `${anteriorTexto} ${formatMoney(stats.ventasAyerTotal)}`,
++            ].join(" · ")}
+             delta={{ pct: variacionHoy, label: `vs. ${anteriorTexto}` }}
+           />
+           <StatMini
+             icon={TrendingUp}
+             accent="from-green-400 to-green-600"
+-            label="Ingresos del mes"
++            label="Ventas del mes"
+             value={formatMoney(stats.ingresosMesTotal)}
+             sub={`mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`}
+             delta={{ pct: variacionMes, label: "vs. mes pasado" }}
+diff --git a/src/components/caja/CajaClient.tsx b/src/components/caja/CajaClient.tsx
+index e3aabe9..68ad5b7 100644
+--- a/src/components/caja/CajaClient.tsx
++++ b/src/components/caja/CajaClient.tsx
+@@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/money";
+ import { CajaModal } from "@/components/pos/CajaModal";
+ import { descargarReporteCaja } from "@/lib/caja/reportePdf";
+ import { useNegocio } from "@/components/providers/NegocioProvider";
++import { seccionesCierre } from "@/lib/caja/cuadre";
+ 
+ function duracion(desde: string) {
+   const ms = Date.now() - new Date(desde).getTime();
+@@ -85,7 +86,7 @@ export function CajaClient({
+         </div>
+ 
+         {cajaActual && (
+-          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
++          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+             <div className="rounded-xl border border-vt-border bg-vt-card p-3">
+               <div className="flex items-center gap-1.5 text-[11px] text-vt-text3">
+                 <Wallet className="h-3.5 w-3.5" />
+@@ -101,42 +102,56 @@ export function CajaClient({
+                 Ventas en efectivo
+               </div>
+               <div className="mt-1 font-mono text-lg font-bold text-vt-green">
+-                {formatMoney(cajaActual.ventas_efectivo)}
++                {formatMoney(cajaActual.cuadre.desglose.efectivo)}
+               </div>
+             </div>
+             <div className="rounded-xl border border-vt-border bg-vt-card p-3">
+-              <div className="text-[11px] text-vt-text3">Efectivo esperado en caja</div>
++              <div className="text-[11px] text-vt-text3">Efectivo esperado en la gaveta</div>
+               <div className="mt-1 font-mono text-lg font-bold text-vt-blue">
+-                {formatMoney(cajaActual.monto_inicial + cajaActual.ventas_efectivo)}
++                {formatMoney(cajaActual.efectivo_esperado)}
++              </div>
++            </div>
++            <div className="rounded-xl border border-vt-border bg-vt-card p-3">
++              <div className="text-[11px] text-vt-text3">Venta del turno ({cajaActual.num_ventas})</div>
++              <div className="mt-1 font-mono text-lg font-bold text-neutral-900 dark:text-white">
++                {formatMoney(cajaActual.cuadre.ventaNeta)}
+               </div>
+             </div>
+           </div>
+         )}
+ 
+         {cajaActual && (
+-          <div className="mt-3 rounded-xl border border-vt-border bg-vt-card p-3 text-sm">
+-            <div className="mb-1.5 flex items-center justify-between">
+-              <span className="text-[11px] text-vt-text3">
+-                Vendido en este turno (desde {new Date(cajaActual.abierta_at).toLocaleString("es-DO")})
+-              </span>
+-              <span className="text-[11px] text-vt-text3">{cajaActual.num_ventas} ventas</span>
+-            </div>
+-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-vt-text2">
+-              {Object.entries(cajaActual.ventas_por_metodo).map(([metodo, monto]) => (
+-                <span key={metodo} className="capitalize">
+-                  {metodo}: <span className="font-mono">{formatMoney(monto)}</span>
+-                </span>
+-              ))}
+-              <span className="font-semibold text-neutral-900 dark:text-white">
+-                Total: <span className="font-mono">{formatMoney(cajaActual.ventas_total)}</span>
+-              </span>
+-            </div>
+-            <p className="mt-1.5 text-[11px] text-vt-text3">
+-              En la gaveta solo debe estar el efectivo. Tarjeta, transferencia y fiado no entran en el
+-              efectivo esperado.
+-            </p>
++          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
++            {seccionesCierre(cajaActual.cuadre, cajaActual.monto_inicial).map((seccion) => (
++              <div key={seccion.titulo} className="rounded-xl border border-vt-border bg-vt-card p-3 text-sm">
++                <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-vt-text3">
++                  {seccion.titulo}
++                </div>
++                {seccion.lineas.map((l) => (
++                  <div
++                    key={l.texto}
++                    className={`flex items-center justify-between gap-3 ${
++                      l.fuerte
++                        ? "mt-1 border-t border-vt-border pt-1 font-semibold text-neutral-900 dark:text-white"
++                        : "text-vt-text2"
++                    }`}
++                  >
++                    <span>{l.texto}</span>
++                    <span className="font-mono">{formatMoney(l.monto)}</span>
++                  </div>
++                ))}
++                {seccion.nota && <p className="mt-1 text-[11px] text-vt-text3">{seccion.nota}</p>}
++              </div>
++            ))}
+           </div>
+         )}
++
++        {cajaActual && (
++          <p className="mt-2 text-[11px] text-vt-text3">
++            Turno desde {new Date(cajaActual.abierta_at).toLocaleString("es-DO")}. En la gaveta solo debe
++            estar el efectivo: tarjeta, transferencia y fiado no entran en el efectivo esperado.
++          </p>
++        )}
+       </div>
+ 
+       <div>
+@@ -161,14 +176,18 @@ export function CajaClient({
+                 <th className="px-4 py-3 font-medium">Apertura</th>
+                 <th className="px-4 py-3 font-medium">Cierre</th>
+                 <th className="px-4 py-3 font-medium">Monto inicial</th>
+-                <th className="px-4 py-3 font-medium">Monto final</th>
++                <th className="px-4 py-3 font-medium">Vendido</th>
++                <th className="px-4 py-3 font-medium">Efectivo esperado</th>
++                <th className="px-4 py-3 font-medium">Contado</th>
+                 <th className="px-4 py-3 font-medium">Diferencia</th>
+                 <th className="px-4 py-3 font-medium">Estado</th>
+               </tr>
+             </thead>
+             <tbody>
+               {historialInicial.map((c) => {
+-                const diferencia = c.monto_final !== null ? c.monto_final - c.monto_inicial : null;
++                // Sobrante (+) o faltante (−): contado contra el efectivo
++                // esperado del turno, no contra el monto inicial.
++                const diferencia = c.diferencia;
+                 return (
+                   <tr key={c.id} className="border-b border-vt-border last:border-0 hover:bg-vt-card-hover">
+                     <td className="px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white">
+@@ -183,6 +202,12 @@ export function CajaClient({
+                     <td className="px-4 py-3 font-mono text-sm text-vt-text2">
+                       {formatMoney(c.monto_inicial)}
+                     </td>
++                    <td className="px-4 py-3 font-mono text-sm text-vt-text2">
++                      {formatMoney(c.cuadre.ventaNeta)}
++                    </td>
++                    <td className="px-4 py-3 font-mono text-sm text-vt-text2">
++                      {formatMoney(c.efectivo_esperado)}
++                    </td>
+                     <td className="px-4 py-3 font-mono text-sm text-vt-text2">
+                       {c.monto_final !== null ? formatMoney(c.monto_final) : "—"}
+                     </td>
+@@ -190,12 +215,18 @@ export function CajaClient({
+                       className={`px-4 py-3 font-mono text-sm font-semibold ${
+                         diferencia === null
+                           ? "text-vt-text3"
+-                          : diferencia >= 0
+-                            ? "text-vt-green"
+-                            : "text-vt-red"
++                          : diferencia === 0
++                            ? "text-vt-text2"
++                            : diferencia > 0
++                              ? "text-vt-green"
++                              : "text-vt-red"
+                       }`}
+                     >
+-                      {diferencia !== null ? formatMoney(diferencia) : "—"}
++                      {diferencia === null
++                        ? "—"
++                        : diferencia === 0
++                          ? "Exacto"
++                          : `${diferencia > 0 ? "Sobra" : "Falta"} ${formatMoney(Math.abs(diferencia))}`}
+                     </td>
+                     <td className="px-4 py-3">
+                       <span
+@@ -226,8 +257,7 @@ export function CajaClient({
+             modal === "cerrar" && cajaActual
+               ? {
+                   montoInicial: cajaActual.monto_inicial,
+-                  ventasEfectivo: cajaActual.ventas_efectivo,
+-                  ventasTotal: cajaActual.ventas_total,
++                  cuadre: cajaActual.cuadre,
+                   cajero: cajaActual.cajero_nombre,
+                   abiertaAt: cajaActual.abierta_at,
+                 }
+diff --git a/src/components/dashboard/UltimasVentasTable.tsx b/src/components/dashboard/UltimasVentasTable.tsx
+index 624bf0e..a377957 100644
+--- a/src/components/dashboard/UltimasVentasTable.tsx
++++ b/src/components/dashboard/UltimasVentasTable.tsx
+@@ -8,6 +8,7 @@ const PAGO_STYLES: Record<string, string> = {
+   tarjeta: "bg-blue-500/15 text-blue-400",
+   transferencia: "bg-purple-500/15 text-purple-400",
+   fiado: "bg-red-500/15 text-red-400",
++  mixto: "bg-amber-500/15 text-amber-500",
+ };
+ 
+ function formatHora(fecha: string) {
+diff --git a/src/components/pos/BotonCopiaFactura.tsx b/src/components/pos/BotonCopiaFactura.tsx
+index 45b2361..e27ef33 100644
+--- a/src/components/pos/BotonCopiaFactura.tsx
++++ b/src/components/pos/BotonCopiaFactura.tsx
+@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
+ import { imprimirFactura } from "@/lib/pos/print";
+ import { useNegocio } from "@/components/providers/NegocioProvider";
+ import { useToast } from "@/components/ui/ToastProvider";
++import { lineasPago, textoMetodoPago, type PagoFila } from "@/lib/pagos";
+ 
+ // Reimprime una factura ya emitida, marcada como COPIA. Pensado para el
+ // fiado: cuando el cliente vuelve días después a pagar, se le entrega una
+@@ -19,7 +20,7 @@ export function BotonCopiaFactura({ ventaId, className }: { ventaId: string; cla
+     setImprimiendo(true);
+     try {
+       const supabase = createClient();
+-      const [{ data: venta }, { data: items }, { data: deudas }] = await Promise.all([
++      const [{ data: venta }, { data: items }, { data: deudas }, { data: pagosData }] = await Promise.all([
+         supabase
+           .from("ventas")
+           .select("numero_factura, fecha, ncf, subtotal, descuento, total, metodo_pago, clientes(nombre), usuarios(nombre)")
+@@ -30,7 +31,9 @@ export function BotonCopiaFactura({ ventaId, className }: { ventaId: string; cla
+           .select("nombre_producto, cantidad, subtotal")
+           .eq("venta_id", ventaId),
+         supabase.from("deudas").select("monto_pagado, saldo").eq("venta_id", ventaId),
++        supabase.from("venta_pagos").select("metodo, tipo_tarjeta, monto").eq("venta_id", ventaId),
+       ]);
++      const pagos = (pagosData ?? []) as PagoFila[];
+       if (!venta) {
+         toast.error("No se encontró la factura");
+         return;
+@@ -44,7 +47,8 @@ export function BotonCopiaFactura({ ventaId, className }: { ventaId: string; cla
+         fecha: venta.fecha,
+         cajero: (venta.usuarios as unknown as { nombre: string } | null)?.nombre ?? "—",
+         cliente: (venta.clientes as unknown as { nombre: string } | null)?.nombre ?? "General",
+-        metodoPago: venta.metodo_pago,
++        metodoPago: textoMetodoPago(venta.metodo_pago, pagos),
++        pagos: pagos.length > 1 ? lineasPago(pagos) : undefined,
+         items: (items ?? []).map((i) => ({
+           nombre: i.nombre_producto,
+           cantidad: Number(i.cantidad),
+diff --git a/src/components/pos/CajaModal.tsx b/src/components/pos/CajaModal.tsx
+index 0bd1fd2..60afc15 100644
+--- a/src/components/pos/CajaModal.tsx
++++ b/src/components/pos/CajaModal.tsx
+@@ -7,6 +7,7 @@ import { formatMoney } from "@/lib/money";
+ import { useToast } from "@/components/ui/ToastProvider";
+ import { imprimirCierreCaja } from "@/lib/pos/printCaja";
+ import { useNegocio } from "@/components/providers/NegocioProvider";
++import { efectivoEsperado, seccionesCierre, type CuadreTurno } from "@/lib/caja/cuadre";
+ 
+ export function CajaModal({
+   mode,
+@@ -17,9 +18,8 @@ export function CajaModal({
+   mode: "abrir" | "cerrar";
+   cuadre?: {
+     montoInicial: number;
+-    ventasEfectivo: number;
+-    /** Todo lo vendido en el turno (todos los métodos): el mismo número del dashboard. */
+-    ventasTotal?: number;
++    /** Ventas por método, abonos, devoluciones y gastos del turno. */
++    cuadre: CuadreTurno;
+     cajero: string;
+     abiertaAt: string;
+   };
+@@ -32,10 +32,13 @@ export function CajaModal({
+   const [pending, startTransition] = useTransition();
+   const toast = useToast();
+ 
+-  const esperado = cuadre ? cuadre.montoInicial + cuadre.ventasEfectivo : null;
++  const esperado = cuadre ? efectivoEsperado(cuadre.montoInicial, cuadre.cuadre) : null;
++  const secciones = cuadre ? seccionesCierre(cuadre.cuadre, cuadre.montoInicial) : [];
+   const contado = Number(monto);
+   const diferencia =
+-    esperado !== null && monto !== "" && !Number.isNaN(contado) ? contado - esperado : null;
++    esperado !== null && monto !== "" && !Number.isNaN(contado)
++      ? Math.round((contado - esperado) * 100) / 100
++      : null;
+ 
+   function confirmar() {
+     const valor = Number(monto);
+@@ -61,8 +64,7 @@ export function CajaModal({
+           abiertaAt: cuadre.abiertaAt,
+           cerradaAt: new Date().toISOString(),
+           montoInicial: cuadre.montoInicial,
+-          ventasEfectivo: cuadre.ventasEfectivo,
+-          ventasTotal: cuadre.ventasTotal,
++          cuadre: cuadre.cuadre,
+           montoContado: valor,
+         }).catch(() => {});
+       }
+@@ -73,7 +75,7 @@ export function CajaModal({
+ 
+   return (
+     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+-      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl dark:bg-[#0f1b33]">
++      <div className="max-h-[95vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-[#0f1b33]">
+         <div className="mb-4 flex items-center justify-between">
+           <div className="flex items-center gap-2">
+             <Archive className="h-5 w-5 text-blue-500" />
+@@ -87,30 +89,42 @@ export function CajaModal({
+         </div>
+ 
+         {cuadre && esperado !== null && (
+-          <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 p-3 text-sm dark:border-white/10 dark:bg-[#0b1424]">
+-            <div className="flex items-center justify-between text-neutral-600 dark:text-neutral-400">
+-              <span>Monto inicial</span>
+-              <span className="font-mono">{formatMoney(cuadre.montoInicial)}</span>
+-            </div>
+-            <div className="mt-1 flex items-center justify-between text-neutral-600 dark:text-neutral-400">
+-              <span>Ventas en efectivo</span>
+-              <span className="font-mono">{formatMoney(cuadre.ventasEfectivo)}</span>
+-            </div>
+-            <div className="mt-2 flex items-center justify-between border-t border-neutral-200 pt-2 font-semibold text-neutral-900 dark:border-white/10 dark:text-white">
+-              <span>Efectivo esperado en caja</span>
+-              <span className="font-mono">{formatMoney(esperado)}</span>
+-            </div>
+-            {cuadre.ventasTotal !== undefined && (
+-              <div className="mt-2 flex items-center justify-between border-t border-neutral-200 pt-2 text-neutral-600 dark:border-white/10 dark:text-neutral-400">
+-                <span>Total vendido en el turno (todos los métodos)</span>
+-                <span className="font-mono">{formatMoney(cuadre.ventasTotal)}</span>
++          <div className="mb-4 flex flex-col gap-3">
++            {secciones.map((seccion, i) => (
++              <div
++                key={seccion.titulo}
++                className={`rounded-xl border p-3 text-sm ${
++                  i === 0
++                    ? "border-blue-200 bg-blue-50/60 dark:border-blue-500/30 dark:bg-blue-500/5"
++                    : "border-neutral-200 bg-neutral-50 dark:border-white/10 dark:bg-[#0b1424]"
++                }`}
++              >
++                <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
++                  {seccion.titulo}
++                </div>
++                {seccion.lineas.map((l) => (
++                  <div
++                    key={l.texto}
++                    className={`flex items-center justify-between gap-3 ${
++                      l.fuerte
++                        ? "mt-1 border-t border-neutral-200 pt-1 font-semibold text-neutral-900 dark:border-white/10 dark:text-white"
++                        : "text-neutral-600 dark:text-neutral-400"
++                    }`}
++                  >
++                    <span>{l.texto}</span>
++                    <span className="font-mono">{formatMoney(l.monto)}</span>
++                  </div>
++                ))}
++                {seccion.nota && (
++                  <p className="mt-1 text-[11px] text-neutral-400">{seccion.nota}</p>
++                )}
+               </div>
+-            )}
++            ))}
+           </div>
+         )}
+ 
+         <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+-          {mode === "abrir" ? "Monto inicial en caja" : "Monto final contado"}
++          {mode === "abrir" ? "Monto inicial en caja" : "Efectivo contado en la gaveta"}
+         </label>
+         <div className="relative">
+           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-400">
+diff --git a/src/components/pos/HistorialTab.tsx b/src/components/pos/HistorialTab.tsx
+index 12bf428..58b06a5 100644
+--- a/src/components/pos/HistorialTab.tsx
++++ b/src/components/pos/HistorialTab.tsx
+@@ -5,12 +5,14 @@ import { createClient } from "@/lib/supabase/client";
+ import { formatMoney } from "@/lib/money";
+ import { hoyRD, rangoDiasRD } from "@/lib/fecha-rd";
+ import { VentaDetalleModal } from "./VentaDetalleModal";
++import { ETIQUETA_DESGLOSE, ORDEN_DESGLOSE, sumarDesglose, textoMetodoPago, type PagoFila } from "@/lib/pagos";
+ 
+ type HistorialItem = {
+   id: string;
+   numero_factura: string;
+   total: number;
+   metodo_pago: string;
++  venta_pagos: PagoFila[] | null;
+   estado: string;
+   fecha: string;
+   cliente_nombre: string;
+@@ -22,6 +24,7 @@ const METODO_EMOJI: Record<string, string> = {
+   tarjeta: "💳",
+   transferencia: "🔁",
+   fiado: "📒",
++  mixto: "🔀",
+ };
+ 
+ function hoyISO() {
+@@ -41,12 +44,34 @@ export function HistorialTab() {
+ 
+     (async () => {
+       const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
+-      const { data } = await supabase
+-        .from("ventas")
+-        .select("id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)")
+-        .gte("fecha", desde)
+-        .lt("fecha", hasta)
+-        .order("fecha", { ascending: false });
++      const consultar = (conPagos: boolean) =>
++        supabase
++          .from("ventas")
++          .select(
++            `id, numero_factura, total, metodo_pago, estado, fecha, clientes(nombre), usuarios(nombre)${
++              conPagos ? ", venta_pagos(metodo, tipo_tarjeta, monto)" : ""
++            }`
++          )
++          .gte("fecha", desde)
++          .lt("fecha", hasta)
++          .order("fecha", { ascending: false });
++      // Sin el SQL de pagos mixtos la tabla venta_pagos no existe: se
++      // consulta sin el desglose.
++      let res = await consultar(true);
++      if (res.error) res = await consultar(false);
++      const data = res.data as unknown as
++        | {
++            id: string;
++            numero_factura: string;
++            total: number;
++            metodo_pago: string;
++            estado: string;
++            fecha: string;
++            clientes: unknown;
++            usuarios: unknown;
++            venta_pagos?: PagoFila[] | null;
++          }[]
++        | null;
+ 
+       if (cancelado) return;
+       setVentas(
+@@ -55,6 +80,7 @@ export function HistorialTab() {
+           numero_factura: v.numero_factura,
+           total: Number(v.total),
+           metodo_pago: v.metodo_pago,
++          venta_pagos: v.venta_pagos ?? null,
+           estado: v.estado,
+           fecha: v.fecha,
+           cliente_nombre:
+@@ -73,14 +99,15 @@ export function HistorialTab() {
+ 
+   // Mismo criterio que "Ventas de hoy" y el cierre de caja: solo ventas
+   // completadas (las anuladas o devueltas se listan pero no suman).
++  // Las ventas mixtas se reparten entre efectivo, tarjeta y transferencia.
+   const resumen = useMemo(() => {
+-    const porMetodo: Record<string, number> = {};
+-    let total = 0;
+-    for (const v of ventas) {
+-      if (v.estado !== "completada") continue;
+-      total += v.total;
+-      porMetodo[v.metodo_pago] = (porMetodo[v.metodo_pago] ?? 0) + v.total;
+-    }
++    const completadas = ventas.filter((v) => v.estado === "completada");
++    const total = completadas.reduce((s, v) => s + v.total, 0);
++    const desglose = sumarDesglose(completadas);
++    const porMetodo = ORDEN_DESGLOSE.filter((k) => desglose[k] !== 0).map((k) => ({
++      etiqueta: ETIQUETA_DESGLOSE[k],
++      monto: desglose[k],
++    }));
+     return { total, porMetodo };
+   }, [ventas]);
+ 
+@@ -98,9 +125,9 @@ export function HistorialTab() {
+             <span className="font-semibold text-neutral-900 dark:text-white">
+               Total del día: {formatMoney(resumen.total)}
+             </span>
+-            {Object.entries(resumen.porMetodo).map(([metodo, monto]) => (
+-              <span key={metodo}>
+-                {METODO_EMOJI[metodo] ?? ""} {metodo}: {formatMoney(monto)}
++            {resumen.porMetodo.map(({ etiqueta, monto }) => (
++              <span key={etiqueta}>
++                {etiqueta}: {formatMoney(monto)}
+               </span>
+             ))}
+           </div>
+@@ -133,7 +160,8 @@ export function HistorialTab() {
+                     hour: "numeric",
+                     minute: "2-digit",
+                   })}{" "}
+-                  · {METODO_EMOJI[v.metodo_pago] ?? ""} {v.metodo_pago} · {v.cajero_nombre}
++                  · {METODO_EMOJI[v.metodo_pago] ?? ""} {textoMetodoPago(v.metodo_pago, v.venta_pagos)} ·{" "}
++                  {v.cajero_nombre}
+                   {v.estado !== "completada" && (
+                     <span className="ml-1 font-semibold capitalize text-vt-red">· {v.estado}</span>
+                   )}
+diff --git a/src/components/pos/POSClient.tsx b/src/components/pos/POSClient.tsx
+index 8c775e8..7face04 100644
+--- a/src/components/pos/POSClient.tsx
++++ b/src/components/pos/POSClient.tsx
+@@ -4,7 +4,9 @@ import { useCallback, useMemo, useState } from "react";
+ import { useRouter } from "next/navigation";
+ import { Wallet, ShoppingCart, ShoppingBag, ClipboardList, PauseCircle } from "lucide-react";
+ import type { UsuarioProfile } from "@/lib/auth";
+-import type { Cliente, Producto, CartLine, MetodoPago } from "@/lib/pos/types";
++import type { Cliente, Producto, CartLine } from "@/lib/pos/types";
++import { lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
++import type { CajaSesion } from "@/lib/caja/queries";
+ import { precioEfectivo, esUnidadEntera } from "@/lib/pos/types";
+ import type { TipoNCF } from "@/lib/fiscal/types";
+ import {
+@@ -33,20 +35,14 @@ import { CustomerPicker } from "./CustomerPicker";
+ import { CartPanel } from "./CartPanel";
+ import { CheckoutSummaryBar } from "./CheckoutSummaryBar";
+ import { CajaModal } from "./CajaModal";
+-import { PaymentModal } from "./PaymentModal";
++import { PaymentModal, type PagoSeleccionado } from "./PaymentModal";
+ import { QuickSaleModal } from "./QuickSaleModal";
+ import { PrinterConfigModal } from "./PrinterConfigModal";
+ import { AparcarVentaModal } from "./AparcarVentaModal";
+ import { VentasAparcadasModal } from "./VentasAparcadasModal";
+ import { HistorialTab } from "./HistorialTab";
+ 
+-type CajaInfo = {
+-  id: string;
+-  monto_inicial: number;
+-  abierta_at: string;
+-  ventas_efectivo: number;
+-  ventas_total: number;
+-} | null;
++type CajaInfo = CajaSesion | null;
+ 
+ export function POSClient({
+   usuario,
+@@ -340,7 +336,9 @@ export function POSClient({
+     setVentasAparcadas((prev) => prev.filter((v) => v.id !== id));
+   }
+ 
+-  async function confirmarPago(metodo: MetodoPago, montoRecibido?: number, ncfTipo?: TipoNCF | null) {
++  async function confirmarPago(pago: PagoSeleccionado, ncfTipo?: TipoNCF | null) {
++    const metodo = pago.metodo;
++    const montoRecibido = pago.montoRecibido;
+     // Un solo id por intento de cobro: si la venta llega a completarse en el
+     // servidor pero la respuesta se pierde (wifi inestable), el reintento
+     // offline usa el mismo id y el servidor devuelve la venta ya creada en
+@@ -363,6 +361,7 @@ export function POSClient({
+         descuento: number;
+         total: number;
+         items: { nombre: string; cantidad: number; subtotal: number }[];
++        pagos?: PagoParte[];
+       }
+     ) {
+       // Si el servidor confirmó los montos finales (pueden diferir de lo que
+@@ -370,10 +369,20 @@ export function POSClient({
+       // cobrar), el ticket se imprime con esos valores, no con el carrito
+       // local. En modo offline no hay confirmación todavía: se usa el
+       // carrito local y ya, sin retrasar la venta ni pedir nada al cajero.
+-      const cambioImpreso =
+-        metodo === "efectivo" && montoRecibido !== undefined
+-          ? Math.max(montoRecibido - (confirmado?.total ?? total), 0)
+-          : undefined;
++      // Partes del pago (tarjeta débito/crédito o mixto) tal como quedaron.
++      const partes: PagoParte[] | undefined =
++        confirmado?.pagos ??
++        (metodo === "mixto"
++          ? pago.pagos
++          : metodo === "tarjeta"
++            ? [{ metodo: "tarjeta", tipoTarjeta: pago.tipoTarjeta ?? null, monto: confirmado?.total ?? total }]
++            : undefined);
++      const efectivoACobrar =
++        metodo === "efectivo"
++          ? confirmado?.total ?? total
++          : (partes ?? []).filter((p) => p.metodo === "efectivo").reduce((s, p) => s + p.monto, 0);
++      const conEfectivo = (metodo === "efectivo" || metodo === "mixto") && montoRecibido !== undefined;
++      const cambioImpreso = conEfectivo ? Math.max(montoRecibido - efectivoACobrar, 0) : undefined;
+       imprimirFactura({
+         negocioNombre,
+         numeroFactura,
+@@ -381,7 +390,11 @@ export function POSClient({
+         fecha,
+         cajero: usuario.nombre,
+         cliente: clienteNombre,
+-        metodoPago: metodo,
++        metodoPago: textoMetodoPago(
++          metodo,
++          partes?.map((p) => ({ metodo: p.metodo, tipo_tarjeta: p.tipoTarjeta ?? null, monto: p.monto }))
++        ),
++        pagos: metodo === "mixto" && partes ? lineasPago(partes) : undefined,
+         items:
+           confirmado?.items ??
+           carrito.map((i) => ({
+@@ -392,7 +405,7 @@ export function POSClient({
+         subtotal: confirmado?.subtotal ?? subtotal,
+         descuento: confirmado?.descuento ?? descuentoTotal,
+         total: confirmado?.total ?? total,
+-        montoRecibido: metodo === "efectivo" ? montoRecibido : undefined,
++        montoRecibido: conEfectivo ? montoRecibido : undefined,
+         cambio: cambioImpreso,
+       }).catch(() => {});
+     }
+@@ -407,6 +420,8 @@ export function POSClient({
+         clienteId: cliente?.id ?? null,
+         clienteNombre,
+         metodoPago: metodo,
++        tipoTarjeta: pago.tipoTarjeta ?? null,
++        pagos: pago.pagos,
+         descuento: descuentoTotal,
+         subtotal,
+         total,
+@@ -434,6 +449,8 @@ export function POSClient({
+         items,
+         clienteId: cliente?.id ?? null,
+         metodoPago: metodo,
++        tipoTarjeta: pago.tipoTarjeta ?? null,
++        pagos: pago.pagos,
+         // Solo el descuento manual: si hay cupón, el servidor recalcula su
+         // monto internamente en vez de confiar en lo que mande el navegador.
+         descuento,
+@@ -450,7 +467,7 @@ export function POSClient({
+           res.fecha,
+           res.ncf,
+           res.subtotal !== undefined && res.descuento !== undefined && res.total !== undefined && res.items
+-            ? { subtotal: res.subtotal, descuento: res.descuento, total: res.total, items: res.items }
++            ? { subtotal: res.subtotal, descuento: res.descuento, total: res.total, items: res.items, pagos: res.pagos }
+             : undefined
+         );
+       }
+@@ -459,7 +476,7 @@ export function POSClient({
+       limpiarCarrito();
+       setPagoAbierto(false);
+       router.refresh();
+-      return {};
++      return { aviso: res.avisoPagos };
+     } catch {
+       // El navegador decía "en línea" pero la petición no llegó (wifi sin
+       // internet, red inestable, etc.): se cobra igual y se guarda para
+@@ -648,8 +665,7 @@ export function POSClient({
+             cajaModal === "cerrar" && cajaInicial
+               ? {
+                   montoInicial: cajaInicial.monto_inicial,
+-                  ventasEfectivo: cajaInicial.ventas_efectivo,
+-                  ventasTotal: cajaInicial.ventas_total,
++                  cuadre: cajaInicial.cuadre,
+                   cajero: usuario.nombre,
+                   abiertaAt: cajaInicial.abierta_at,
+                 }
+diff --git a/src/components/pos/PaymentModal.tsx b/src/components/pos/PaymentModal.tsx
+index 9d95aef..ab1d5d4 100644
+--- a/src/components/pos/PaymentModal.tsx
++++ b/src/components/pos/PaymentModal.tsx
+@@ -1,8 +1,9 @@
+ "use client";
+ 
+ import { useMemo, useState, useTransition } from "react";
+-import { Banknote, CreditCard, ArrowLeftRight, HandCoins, X, Check, FileText } from "lucide-react";
++import { Banknote, CreditCard, ArrowLeftRight, HandCoins, X, Check, FileText, Layers } from "lucide-react";
+ import type { MetodoPago } from "@/lib/pos/types";
++import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
+ import { TIPO_NCF_LABEL, type TipoNCF } from "@/lib/fiscal/types";
+ import { formatMoney } from "@/lib/money";
+ import { useToast } from "@/components/ui/ToastProvider";
+@@ -12,8 +13,49 @@ const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote }[] = [
+   { id: "tarjeta", label: "Tarjeta", icon: CreditCard },
+   { id: "transferencia", label: "Transf.", icon: ArrowLeftRight },
+   { id: "fiado", label: "Fiado", icon: HandCoins },
++  { id: "mixto", label: "Mixto", icon: Layers },
+ ];
+ 
++export type PagoSeleccionado = {
++  metodo: MetodoPago;
++  /** Tarjeta (sola o en pago mixto): débito o crédito. */
++  tipoTarjeta?: TipoTarjeta | null;
++  /** Pago mixto: cuánto se paga con cada método. Siempre suma el total. */
++  pagos?: PagoParte[];
++  /** Efectivo que entregó el cliente, para calcular el cambio. */
++  montoRecibido?: number;
++};
++
++function SelectorTipoTarjeta({
++  valor,
++  onChange,
++}: {
++  valor: TipoTarjeta | null;
++  onChange: (t: TipoTarjeta) => void;
++}) {
++  return (
++    <div className="grid grid-cols-2 gap-2">
++      {(["debito", "credito"] as const).map((t) => (
++        <button
++          key={t}
++          type="button"
++          onClick={() => onChange(t)}
++          className={`rounded-xl border py-2 text-sm font-semibold transition ${
++            valor === t
++              ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
++              : "border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
++          }`}
++        >
++          {t === "debito" ? "Débito" : "Crédito"}
++        </button>
++      ))}
++    </div>
++  );
++}
++
++const INPUT_MONTO =
++  "w-full rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-right font-mono text-base font-bold outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 dark:border-white/10 dark:bg-[#0b1424] dark:text-white";
++
+ const DENOMINACIONES = [50, 100, 200, 500, 1000, 2000];
+ 
+ function billetesSugeridos(total: number): number[] {
+@@ -41,23 +83,56 @@ export function PaymentModal({
+   tiposNcfDisponibles: TipoNCF[];
+   onClose: () => void;
+   onConfirmar: (
+-    metodo: MetodoPago,
+-    montoRecibido?: number,
++    pago: PagoSeleccionado,
+     ncfTipo?: TipoNCF | null
+-  ) => Promise<{ error?: string; offline?: boolean }>;
++  ) => Promise<{ error?: string; offline?: boolean; aviso?: string }>;
+ }) {
+   const [metodo, setMetodo] = useState<MetodoPago>("efectivo");
+   const [montoRecibido, setMontoRecibido] = useState("");
++  const [tipoTarjeta, setTipoTarjeta] = useState<TipoTarjeta | null>(null);
++  const [mixtoTarjeta, setMixtoTarjeta] = useState("");
++  const [mixtoTransferencia, setMixtoTransferencia] = useState("");
+   const [ncfTipo, setNcfTipo] = useState<TipoNCF | "">("");
+   const [error, setError] = useState<string | null>(null);
+   const [pending, startTransition] = useTransition();
+   const toast = useToast();
+ 
+   const recibido = Number(montoRecibido) || 0;
+-  const cambio = useMemo(() => recibido - total, [recibido, total]);
+-  const faltaEfectivo = metodo === "efectivo" && recibido < total;
+   const sugeridos = useMemo(() => billetesSugeridos(total), [total]);
+ 
++  // Pago mixto: el cajero pone lo de tarjeta y/o transferencia; el resto es
++  // efectivo.
++  const montoTarjeta = centavos(Number(mixtoTarjeta) || 0);
++  const montoTransferencia = centavos(Number(mixtoTransferencia) || 0);
++  const efectivoMixto = centavos(total - montoTarjeta - montoTransferencia);
++  const partesMixto: PagoParte[] = [
++    ...(efectivoMixto > 0 ? [{ metodo: "efectivo" as const, monto: efectivoMixto }] : []),
++    ...(montoTarjeta > 0 ? [{ metodo: "tarjeta" as const, tipoTarjeta, monto: montoTarjeta }] : []),
++    ...(montoTransferencia > 0 ? [{ metodo: "transferencia" as const, monto: montoTransferencia }] : []),
++  ];
++
++  // Efectivo que entra a la gaveta: todo el total (efectivo) o el resto (mixto).
++  const efectivoACobrar =
++    metodo === "efectivo" ? total : metodo === "mixto" ? Math.max(efectivoMixto, 0) : 0;
++  const cambio = recibido - efectivoACobrar;
++  const faltaEfectivo = metodo === "efectivo" && recibido < total;
++  // En mixto el efectivo recibido es opcional: si se deja vacío, se asume exacto.
++  const faltaEfectivoMixto = metodo === "mixto" && montoRecibido !== "" && recibido < efectivoACobrar;
++
++  function errorMixto(): string | null {
++    if (efectivoMixto < 0) return "Tarjeta + transferencia no pueden pasar del total";
++    if (partesMixto.length < 2) return "Pon el monto de al menos dos métodos (el resto se cobra en efectivo)";
++    if (montoTarjeta > 0 && !tipoTarjeta) return "Indica si la tarjeta es de débito o de crédito";
++    if (faltaEfectivoMixto) return "El efectivo recibido es menor a la parte en efectivo";
++    return null;
++  }
++
++  function cambiarMetodo(id: MetodoPago) {
++    setMetodo(id);
++    setMontoRecibido("");
++    setError(null);
++  }
++
+   function confirmar() {
+     if (metodo === "fiado" && requiereCliente) {
+       setError("Selecciona un cliente para venta a fiado");
+@@ -67,13 +142,37 @@ export function PaymentModal({
+       setError("El monto recibido es menor al total");
+       return;
+     }
++    if (metodo === "tarjeta" && !tipoTarjeta) {
++      setError("Indica si la tarjeta es de débito o de crédito");
++      return;
++    }
++    if (metodo === "mixto") {
++      const e = errorMixto();
++      if (e) {
++        setError(e);
++        return;
++      }
++    }
+     setError(null);
+-    startTransition(async () => {
+-      const res = await onConfirmar(
++
++    let pago: PagoSeleccionado;
++    if (metodo === "efectivo") {
++      pago = { metodo, montoRecibido: recibido };
++    } else if (metodo === "tarjeta") {
++      pago = { metodo, tipoTarjeta };
++    } else if (metodo === "mixto") {
++      pago = {
+         metodo,
+-        metodo === "efectivo" ? recibido : undefined,
+-        ncfTipo || null
+-      );
++        pagos: partesMixto,
++        montoRecibido:
++          efectivoMixto > 0 ? (montoRecibido === "" ? efectivoMixto : recibido) : undefined,
++      };
++    } else {
++      pago = { metodo };
++    }
++
++    startTransition(async () => {
++      const res = await onConfirmar(pago, ncfTipo || null);
+       if (res.error) {
+         setError(res.error);
+         toast.error(res.error);
+@@ -84,12 +183,13 @@ export function PaymentModal({
+           ? "Venta guardada sin conexión: se sincronizará automáticamente"
+           : "Venta registrada correctamente"
+       );
++      if (res.aviso) toast.error(res.aviso);
+     });
+   }
+ 
+   return (
+     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+-      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl dark:bg-[#0f1b33]">
++      <div className="max-h-[95vh] w-full max-w-sm overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl dark:bg-[#0f1b33]">
+         <div className="mb-4 flex items-center justify-between">
+           <h2 className="flex items-center gap-2 text-base font-semibold text-neutral-900 dark:text-white">
+             💰 Confirmar Cobro
+@@ -109,12 +209,12 @@ export function PaymentModal({
+         <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+           Método de pago
+         </div>
+-        <div className="grid grid-cols-4 gap-2">
++        <div className="grid grid-cols-5 gap-1.5">
+           {METODOS.map(({ id, label, icon: Icon }) => (
+             <button
+               key={id}
+-              onClick={() => setMetodo(id)}
+-              className={`flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition ${
++              onClick={() => cambiarMetodo(id)}
++              className={`flex flex-col items-center gap-1.5 rounded-xl border px-1 py-3 text-xs font-medium transition ${
+                 metodo === id
+                   ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
+                   : "border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
+@@ -126,6 +226,133 @@ export function PaymentModal({
+           ))}
+         </div>
+ 
++        {metodo === "tarjeta" && (
++          <div className="mt-4">
++            <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
++              Tipo de tarjeta
++            </div>
++            <SelectorTipoTarjeta valor={tipoTarjeta} onChange={setTipoTarjeta} />
++          </div>
++        )}
++
++        {metodo === "mixto" && (
++          <div className="mt-4 flex flex-col gap-2.5">
++            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
++              ¿Cuánto paga con cada método?
++            </div>
++
++            <div className="rounded-xl border border-neutral-200 p-2.5 dark:border-white/10">
++              <div className="mb-1.5 flex items-center justify-between gap-2">
++                <span className="flex items-center gap-1.5 text-sm font-semibold text-neutral-700 dark:text-neutral-200">
++                  <CreditCard className="h-4 w-4" /> Tarjeta
++                </span>
++                <button
++                  type="button"
++                  onClick={() => setMixtoTarjeta(String(Math.max(centavos(total - montoTransferencia), 0)))}
++                  className="text-[11px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
++                >
++                  Poner el resto
++                </button>
++              </div>
++              <input
++                autoFocus
++                type="number"
++                min={0}
++                step="0.01"
++                value={mixtoTarjeta}
++                onChange={(e) => setMixtoTarjeta(e.target.value)}
++                placeholder="0.00"
++                className={INPUT_MONTO}
++              />
++              {montoTarjeta > 0 && (
++                <div className="mt-2">
++                  <SelectorTipoTarjeta valor={tipoTarjeta} onChange={setTipoTarjeta} />
++                </div>
++              )}
++            </div>
++
++            <div className="rounded-xl border border-neutral-200 p-2.5 dark:border-white/10">
++              <div className="mb-1.5 flex items-center justify-between gap-2">
++                <span className="flex items-center gap-1.5 text-sm font-semibold text-neutral-700 dark:text-neutral-200">
++                  <ArrowLeftRight className="h-4 w-4" /> Transferencia
++                </span>
++                <button
++                  type="button"
++                  onClick={() => setMixtoTransferencia(String(Math.max(centavos(total - montoTarjeta), 0)))}
++                  className="text-[11px] font-semibold text-blue-600 hover:underline dark:text-blue-400"
++                >
++                  Poner el resto
++                </button>
++              </div>
++              <input
++                type="number"
++                min={0}
++                step="0.01"
++                value={mixtoTransferencia}
++                onChange={(e) => setMixtoTransferencia(e.target.value)}
++                placeholder="0.00"
++                className={INPUT_MONTO}
++              />
++            </div>
++
++            <div
++              className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
++                efectivoMixto < 0 ? "bg-red-50 dark:bg-red-500/10" : "bg-neutral-100 dark:bg-white/5"
++              }`}
++            >
++              <span className="flex items-center gap-1.5 text-sm font-semibold text-neutral-700 dark:text-neutral-200">
++                <Banknote className="h-4 w-4" /> Efectivo (el resto)
++              </span>
++              <span
++                className={`font-mono text-lg font-extrabold ${
++                  efectivoMixto < 0 ? "text-red-700 dark:text-red-400" : "text-neutral-900 dark:text-white"
++                }`}
++              >
++                {formatMoney(efectivoMixto)}
++              </span>
++            </div>
++
++            {efectivoMixto > 0 && (
++              <>
++                <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
++                  Efectivo recibido (opcional, para el cambio)
++                </div>
++                <input
++                  type="number"
++                  min={0}
++                  step="0.01"
++                  value={montoRecibido}
++                  onChange={(e) => setMontoRecibido(e.target.value)}
++                  placeholder={efectivoMixto.toFixed(2)}
++                  className={INPUT_MONTO}
++                />
++                {montoRecibido !== "" && (
++                  <div
++                    className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
++                      cambio < 0 ? "bg-red-50 dark:bg-red-500/10" : "bg-green-50 dark:bg-green-500/10"
++                    }`}
++                  >
++                    <span
++                      className={`text-sm font-semibold ${
++                        cambio < 0 ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"
++                      }`}
++                    >
++                      {cambio < 0 ? "FALTA" : "CAMBIO"}
++                    </span>
++                    <span
++                      className={`text-lg font-extrabold ${
++                        cambio < 0 ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"
++                      }`}
++                    >
++                      {formatMoney(Math.abs(cambio))}
++                    </span>
++                  </div>
++                )}
++              </>
++            )}
++          </div>
++        )}
++
+         {metodo === "efectivo" && (
+           <>
+             <div className="mb-1.5 mt-4 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+diff --git a/src/components/pos/VentaDetalleModal.tsx b/src/components/pos/VentaDetalleModal.tsx
+index 97554cf..534ae9c 100644
+--- a/src/components/pos/VentaDetalleModal.tsx
++++ b/src/components/pos/VentaDetalleModal.tsx
+@@ -5,6 +5,7 @@ import { X, Receipt } from "lucide-react";
+ import { createClient } from "@/lib/supabase/client";
+ import { formatMoney } from "@/lib/money";
+ import { BotonCopiaFactura } from "./BotonCopiaFactura";
++import { lineasPago, textoMetodoPago, type PagoFila } from "@/lib/pagos";
+ 
+ type Detalle = {
+   numero_factura: string;
+@@ -13,6 +14,7 @@ type Detalle = {
+   subtotal: number;
+   descuento: number;
+   metodo_pago: string;
++  pagos: PagoFila[];
+   cliente_nombre: string;
+   cajero_nombre: string;
+   items: { nombre_producto: string; cantidad: number; precio_unitario: number; subtotal: number }[];
+@@ -31,7 +33,7 @@ export function VentaDetalleModal({
+     let cancelado = false;
+     const supabase = createClient();
+     (async () => {
+-      const [{ data: venta }, { data: items }] = await Promise.all([
++      const [{ data: venta }, { data: items }, { data: pagos }] = await Promise.all([
+         supabase
+           .from("ventas")
+           .select(
+@@ -43,6 +45,8 @@ export function VentaDetalleModal({
+           .from("venta_items")
+           .select("nombre_producto, cantidad, precio_unitario, subtotal")
+           .eq("venta_id", ventaId),
++        // Si la tabla no existe todavía, simplemente no hay desglose.
++        supabase.from("venta_pagos").select("metodo, tipo_tarjeta, monto").eq("venta_id", ventaId),
+       ]);
+       if (cancelado || !venta) return;
+       setDetalle({
+@@ -52,6 +56,7 @@ export function VentaDetalleModal({
+         subtotal: Number(venta.subtotal),
+         descuento: Number(venta.descuento),
+         metodo_pago: venta.metodo_pago,
++        pagos: (pagos ?? []) as PagoFila[],
+         cliente_nombre:
+           (venta.clientes as unknown as { nombre: string } | null)?.nombre ?? "General",
+         cajero_nombre:
+@@ -111,8 +116,14 @@ export function VentaDetalleModal({
+               <div>
+                 <div className="text-xs text-vt-text3">Método</div>
+                 <div className="font-semibold capitalize text-neutral-900 dark:text-white">
+-                  {detalle.metodo_pago}
++                  {textoMetodoPago(detalle.metodo_pago, detalle.pagos)}
+                 </div>
++                {detalle.pagos.length > 1 &&
++                  lineasPago(detalle.pagos).map((l, i) => (
++                    <div key={i} className="text-xs text-vt-text2">
++                      {l.etiqueta}: <span className="font-mono">{formatMoney(l.monto)}</span>
++                    </div>
++                  ))}
+               </div>
+             </div>
+ 
+diff --git a/src/lib/caja/cuadre.ts b/src/lib/caja/cuadre.ts
+new file mode 100644
+index 0000000..b1302a7
+--- /dev/null
++++ b/src/lib/caja/cuadre.ts
+@@ -0,0 +1,151 @@
++// Cuadre de un turno de caja: cuánto se vendió por cada método y cuánto
++// efectivo debe haber en la gaveta. Sin nada del servidor: lo usan las
++// consultas y también la ventana de cierre en el navegador.
++import { centavos, desgloseVacio, sumarDesglose, type Desglose, type PagoFila } from "@/lib/pagos";
++
++export type VentaMov = {
++  total: number;
++  metodo_pago: string;
++  fecha: string;
++  venta_pagos: PagoFila[] | null;
++};
++
++export type DevolucionMov = { total_devuelto: number; metodo_devolucion: string; fecha: string };
++export type AbonoMov = { monto: number; metodo_pago: string; fecha: string };
++export type GastoMov = { monto: number; metodo_pago: string; fecha: string; categoria_gasto: string };
++
++export type CuadreTurno = {
++  numVentas: number;
++  /** Todo lo facturado (todos los métodos), antes de devoluciones. */
++  ventasTotal: number;
++  /** Ventas por método: efectivo, tarjeta débito/crédito, transferencia, fiado. */
++  desglose: Desglose;
++  devolucionesTotal: number;
++  devolucionesEfectivo: number;
++  /** Venta real del turno: facturado − devoluciones. */
++  ventaNeta: number;
++  /** Cobros de fiado (abonos) recibidos en el turno, por método. */
++  abonosEfectivo: number;
++  abonosTarjeta: number;
++  abonosTransferencia: number;
++  gastosEfectivo: number;
++  /**
++   * Efectivo que entró (o salió) de la gaveta en el turno, sin el monto
++   * inicial: ventas en efectivo + abonos en efectivo − devoluciones en
++   * efectivo − gastos pagados en efectivo.
++   */
++  efectivoNeto: number;
++};
++
++export function cuadreVacio(): CuadreTurno {
++  return {
++    numVentas: 0,
++    ventasTotal: 0,
++    desglose: desgloseVacio(),
++    devolucionesTotal: 0,
++    devolucionesEfectivo: 0,
++    ventaNeta: 0,
++    abonosEfectivo: 0,
++    abonosTarjeta: 0,
++    abonosTransferencia: 0,
++    gastosEfectivo: 0,
++    efectivoNeto: 0,
++  };
++}
++
++export function calcularCuadre(datos: {
++  ventas: VentaMov[];
++  devoluciones: DevolucionMov[];
++  abonos: AbonoMov[];
++  gastos: GastoMov[];
++}): CuadreTurno {
++  const desglose = sumarDesglose(datos.ventas);
++  const ventasTotal = centavos(datos.ventas.reduce((s, v) => s + v.total, 0));
++  const devolucionesTotal = centavos(datos.devoluciones.reduce((s, d) => s + d.total_devuelto, 0));
++  const devolucionesEfectivo = centavos(
++    datos.devoluciones.filter((d) => d.metodo_devolucion === "efectivo").reduce((s, d) => s + d.total_devuelto, 0)
++  );
++  const sumaAbonos = (metodo: string) =>
++    centavos(datos.abonos.filter((a) => a.metodo_pago === metodo).reduce((s, a) => s + a.monto, 0));
++  const abonosEfectivo = sumaAbonos("efectivo");
++  const gastosEfectivo = centavos(
++    datos.gastos.filter((g) => g.metodo_pago === "efectivo").reduce((s, g) => s + g.monto, 0)
++  );
++
++  return {
++    numVentas: datos.ventas.length,
++    ventasTotal,
++    desglose,
++    devolucionesTotal,
++    devolucionesEfectivo,
++    ventaNeta: centavos(ventasTotal - devolucionesTotal),
++    abonosEfectivo,
++    abonosTarjeta: sumaAbonos("tarjeta"),
++    abonosTransferencia: sumaAbonos("transferencia"),
++    gastosEfectivo,
++    efectivoNeto: centavos(desglose.efectivo + abonosEfectivo - devolucionesEfectivo - gastosEfectivo),
++  };
++}
++
++
++// ============================================================
++// Resumen de cierre: lo mismo en pantalla, en el ticket y en el PDF
++// ============================================================
++
++export type LineaCierre = { texto: string; monto: number; fuerte?: boolean };
++export type SeccionCierre = { titulo: string; nota?: string; lineas: LineaCierre[] };
++
++/** Efectivo que debe haber en la gaveta al cerrar. */
++export function efectivoEsperado(montoInicial: number, cuadre: CuadreTurno): number {
++  return centavos(montoInicial + cuadre.efectivoNeto);
++}
++
++export function seccionesCierre(cuadre: CuadreTurno, montoInicial: number): SeccionCierre[] {
++  const d = cuadre.desglose;
++  const siHay = (texto: string, monto: number): LineaCierre[] => (monto !== 0 ? [{ texto, monto }] : []);
++
++  const gaveta: SeccionCierre = {
++    titulo: "Efectivo en la gaveta (lo que debes contar)",
++    lineas: [
++      { texto: "Monto inicial", monto: montoInicial },
++      { texto: "+ Ventas en efectivo", monto: d.efectivo },
++      ...siHay("+ Abonos de fiado en efectivo", cuadre.abonosEfectivo),
++      ...siHay("- Devoluciones en efectivo", cuadre.devolucionesEfectivo),
++      ...siHay("- Gastos pagados en efectivo", cuadre.gastosEfectivo),
++      { texto: "= Efectivo esperado", monto: efectivoEsperado(montoInicial, cuadre), fuerte: true },
++    ],
++  };
++
++  const tarjetas = centavos(d.tarjeta_debito + d.tarjeta_credito + d.tarjeta);
++  const ventas: SeccionCierre = {
++    titulo: `Ventas del turno (${cuadre.numVentas})`,
++    lineas: [
++      { texto: "Efectivo", monto: d.efectivo },
++      { texto: "Tarjeta débito", monto: d.tarjeta_debito },
++      { texto: "Tarjeta crédito", monto: d.tarjeta_credito },
++      ...siHay("Tarjeta (sin tipo)", d.tarjeta),
++      { texto: "Transferencia", monto: d.transferencia },
++      { texto: "Fiado (a crédito)", monto: d.fiado },
++      { texto: "Total vendido", monto: cuadre.ventasTotal, fuerte: true },
++      ...(cuadre.devolucionesTotal !== 0
++        ? [
++            { texto: "- Devoluciones", monto: cuadre.devolucionesTotal },
++            { texto: "Venta neta", monto: cuadre.ventaNeta, fuerte: true },
++          ]
++        : []),
++    ],
++  };
++
++  const banco: SeccionCierre = {
++    titulo: "Para cuadrar con el banco / verifone",
++    nota: "Esto no está en la gaveta.",
++    lineas: [
++      { texto: "Total tarjetas (ventas)", monto: tarjetas },
++      ...siHay("Abonos de fiado con tarjeta", cuadre.abonosTarjeta),
++      { texto: "Total transferencias (ventas)", monto: d.transferencia },
++      ...siHay("Abonos de fiado por transferencia", cuadre.abonosTransferencia),
++    ],
++  };
++
++  return [gaveta, ventas, banco];
++}
+diff --git a/src/lib/caja/queries.ts b/src/lib/caja/queries.ts
+index 17a4654..1287a90 100644
+--- a/src/lib/caja/queries.ts
++++ b/src/lib/caja/queries.ts
+@@ -1,5 +1,16 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
++import {
++  abonosDelRango,
++  cuadreDelRango,
++  devolucionesDelRango,
++  gastosDelRango,
++  ventasCompletadas,
++} from "@/lib/ventas/movimientos";
++import { calcularCuadre, type CuadreTurno } from "./cuadre";
++import { centavos } from "@/lib/pagos";
++
++export type { CuadreTurno } from "./cuadre";
+ 
+ export type CajaSesion = {
+   id: string;
+@@ -9,72 +20,107 @@ export type CajaSesion = {
+   estado: "abierta" | "cerrada";
+   abierta_at: string;
+   cerrada_at: string | null;
++  /** Todo el movimiento del turno: ventas por método, abonos, devoluciones y gastos. */
++  cuadre: CuadreTurno;
++  /** Monto inicial + efectivo neto del turno: lo que debe haber en la gaveta. */
++  efectivo_esperado: number;
++  /** Contado − esperado (positivo = sobrante, negativo = faltante). null si sigue abierta. */
++  diferencia: number | null;
++  // Campos de antes, se mantienen para no romper nada.
+   ventas_efectivo: number;
+   num_ventas: number;
+-  /** Todo lo vendido en el turno (efectivo + tarjeta + transferencia + fiado). */
+   ventas_total: number;
+   ventas_por_metodo: Record<string, number>;
+ };
+ 
++type FilaCaja = {
++  id: string;
++  monto_inicial: number | string;
++  monto_final: number | string | null;
++  estado: "abierta" | "cerrada";
++  abierta_at: string;
++  cerrada_at: string | null;
++  usuarios: unknown;
++};
++
++function armarSesion(c: FilaCaja, cuadre: CuadreTurno): CajaSesion {
++  const montoInicial = Number(c.monto_inicial);
++  const montoFinal = c.monto_final === null ? null : Number(c.monto_final);
++  const esperado = centavos(montoInicial + cuadre.efectivoNeto);
++  const porMetodo: Record<string, number> = {};
++  for (const [clave, monto] of Object.entries(cuadre.desglose)) if (monto !== 0) porMetodo[clave] = monto;
++
++  return {
++    id: c.id,
++    cajero_nombre: (c.usuarios as { nombre: string } | null)?.nombre ?? "—",
++    monto_inicial: montoInicial,
++    monto_final: montoFinal,
++    estado: c.estado,
++    abierta_at: c.abierta_at,
++    cerrada_at: c.cerrada_at,
++    cuadre,
++    efectivo_esperado: esperado,
++    diferencia: montoFinal === null || c.estado === "abierta" ? null : centavos(montoFinal - esperado),
++    ventas_efectivo: cuadre.desglose.efectivo,
++    num_ventas: cuadre.numVentas,
++    ventas_total: cuadre.ventasTotal,
++    ventas_por_metodo: porMetodo,
++  };
++}
++
++const COLUMNAS_CAJA = "id, monto_inicial, monto_final, estado, abierta_at, cerrada_at, usuarios(nombre)";
++
+ export async function getCajaActual(): Promise<CajaSesion | null> {
+   const supabase = await createClient();
+   const { data: rows } = await supabase
+     .from("caja")
+-    .select("id, monto_inicial, monto_final, estado, abierta_at, cerrada_at, usuarios(nombre)")
++    .select(COLUMNAS_CAJA)
+     .eq("estado", "abierta")
+     .order("abierta_at", { ascending: false })
+     .limit(1);
+ 
+-  const data = rows?.[0] ?? null;
++  const data = (rows?.[0] ?? null) as FilaCaja | null;
+   if (!data) return null;
+ 
+-  const { data: ventas } = await supabase
+-    .from("ventas")
+-    .select("total, metodo_pago")
+-    .eq("estado", "completada")
+-    .gte("fecha", data.abierta_at);
+-
+-  const ventasPorMetodo: Record<string, number> = {};
+-  for (const v of ventas ?? []) {
+-    ventasPorMetodo[v.metodo_pago] = (ventasPorMetodo[v.metodo_pago] ?? 0) + Number(v.total);
+-  }
+-  const ventasEfectivo = ventasPorMetodo.efectivo ?? 0;
+-  const ventasTotal = Object.values(ventasPorMetodo).reduce((s, n) => s + n, 0);
+-
+-  return {
+-    id: data.id,
+-    cajero_nombre: (data.usuarios as unknown as { nombre: string } | null)?.nombre ?? "—",
+-    monto_inicial: Number(data.monto_inicial),
+-    monto_final: data.monto_final === null ? null : Number(data.monto_final),
+-    estado: data.estado,
+-    abierta_at: data.abierta_at,
+-    cerrada_at: data.cerrada_at,
+-    ventas_efectivo: ventasEfectivo,
+-    num_ventas: (ventas ?? []).length,
+-    ventas_total: ventasTotal,
+-    ventas_por_metodo: ventasPorMetodo,
+-  };
++  const cuadre = await cuadreDelRango(supabase, { desde: data.abierta_at, hasta: null });
++  return armarSesion(data, cuadre);
+ }
+ 
+ export async function getCajaHistorial(limit = 30): Promise<CajaSesion[]> {
+   const supabase = await createClient();
+   const { data } = await supabase
+     .from("caja")
+-    .select("id, monto_inicial, monto_final, estado, abierta_at, cerrada_at, usuarios(nombre)")
++    .select(COLUMNAS_CAJA)
+     .order("abierta_at", { ascending: false })
+     .limit(limit);
+ 
+-  return (data ?? []).map((c) => ({
+-    id: c.id,
+-    cajero_nombre: (c.usuarios as unknown as { nombre: string } | null)?.nombre ?? "—",
+-    monto_inicial: Number(c.monto_inicial),
+-    monto_final: c.monto_final === null ? null : Number(c.monto_final),
+-    estado: c.estado,
+-    abierta_at: c.abierta_at,
+-    cerrada_at: c.cerrada_at,
+-    ventas_efectivo: 0,
+-    num_ventas: 0,
+-    ventas_total: 0,
+-    ventas_por_metodo: {},
+-  }));
++  const cajas = (data ?? []) as FilaCaja[];
++  if (cajas.length === 0) return [];
++
++  // Se traen todos los movimientos desde la caja más vieja de la lista una
++  // sola vez y se reparten por turno, en vez de hacer 4 consultas por caja.
++  const desde = cajas[cajas.length - 1].abierta_at;
++  const rango = { desde, hasta: null };
++  const [ventas, devoluciones, abonos, gastos] = await Promise.all([
++    ventasCompletadas(supabase, rango),
++    devolucionesDelRango(supabase, rango),
++    abonosDelRango(supabase, rango),
++    gastosDelRango(supabase, rango),
++  ]);
++
++  return cajas.map((c) => {
++    const inicio = Date.parse(c.abierta_at);
++    const fin = c.cerrada_at ? Date.parse(c.cerrada_at) : Number.POSITIVE_INFINITY;
++    const dentro = (fecha: string) => {
++      const t = Date.parse(fecha);
++      return t >= inicio && t <= fin;
++    };
++    const cuadre = calcularCuadre({
++      ventas: ventas.filter((v) => dentro(v.fecha)),
++      devoluciones: devoluciones.filter((d) => dentro(d.fecha)),
++      abonos: abonos.filter((a) => dentro(a.fecha)),
++      gastos: gastos.filter((g) => dentro(g.fecha)),
++    });
++    return armarSesion(c, cuadre);
++  });
+ }
+diff --git a/src/lib/caja/reportePdf.ts b/src/lib/caja/reportePdf.ts
+index 165784d..27684d9 100644
+--- a/src/lib/caja/reportePdf.ts
++++ b/src/lib/caja/reportePdf.ts
+@@ -18,7 +18,8 @@ export function descargarReporteCaja(
+ 
+   const filas = historial
+     .map((c) => {
+-      const diferencia = c.monto_final !== null ? c.monto_final - c.monto_inicial : null;
++      // Contado contra el efectivo esperado del turno (no contra el monto inicial).
++      const diferencia = c.diferencia;
+       const colorDif = diferencia === null ? "#889" : diferencia >= 0 ? "#1b7f43" : "#c62828";
+       return `
+         <tr>
+@@ -26,6 +27,8 @@ export function descargarReporteCaja(
+           <td>${new Date(c.abierta_at).toLocaleString("es-DO")}</td>
+           <td>${c.cerrada_at ? new Date(c.cerrada_at).toLocaleString("es-DO") : "—"}</td>
+           <td class="right">${formatMoney(c.monto_inicial)}</td>
++          <td class="right">${formatMoney(c.cuadre.ventaNeta)}</td>
++          <td class="right">${formatMoney(c.efectivo_esperado)}</td>
+           <td class="right">${c.monto_final !== null ? formatMoney(c.monto_final) : "—"}</td>
+           <td class="right" style="color:${colorDif}">${diferencia !== null ? formatMoney(diferencia) : "—"}</td>
+           <td>${c.estado === "abierta" ? "Abierta" : "Cerrada"}</td>
+@@ -35,10 +38,7 @@ export function descargarReporteCaja(
+ 
+   const totalInicial = historial.reduce((s, c) => s + c.monto_inicial, 0);
+   const totalFinal = historial.reduce((s, c) => s + (c.monto_final ?? 0), 0);
+-  const totalDiferencia = historial.reduce(
+-    (s, c) => s + (c.monto_final !== null ? c.monto_final - c.monto_inicial : 0),
+-    0
+-  );
++  const totalDiferencia = historial.reduce((s, c) => s + (c.diferencia ?? 0), 0);
+ 
+   ventana.document.write(`
+     <html>
+@@ -95,7 +95,7 @@ export function descargarReporteCaja(
+             <div class="valor azul">${formatMoney(totalFinal)}</div>
+           </div>
+           <div class="tarjeta">
+-            <div class="label">Diferencia acumulada</div>
++            <div class="label">Sobrante / faltante acumulado</div>
+             <div class="valor ${totalDiferencia >= 0 ? "verde" : "rojo"}">${formatMoney(totalDiferencia)}</div>
+           </div>
+         </div>
+@@ -105,12 +105,13 @@ export function descargarReporteCaja(
+           <thead>
+             <tr>
+               <th>Cajero</th><th>Apertura</th><th>Cierre</th>
+-              <th class="right">Monto inicial</th><th class="right">Monto final</th>
++              <th class="right">Monto inicial</th><th class="right">Vendido</th>
++              <th class="right">Efectivo esperado</th><th class="right">Contado</th>
+               <th class="right">Diferencia</th><th>Estado</th>
+             </tr>
+           </thead>
+           <tbody>
+-            ${filas || `<tr><td colspan="7">Sin historial de caja</td></tr>`}
++            ${filas || `<tr><td colspan="9">Sin historial de caja</td></tr>`}
+           </tbody>
+         </table>
+ 
+diff --git a/src/lib/contabilidad/queries.ts b/src/lib/contabilidad/queries.ts
+index ed9bfd8..7732b10 100644
+--- a/src/lib/contabilidad/queries.ts
++++ b/src/lib/contabilidad/queries.ts
+@@ -1,21 +1,21 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
+-import { rangoDiasRD } from "@/lib/fecha-rd";
++import { fechaRD, rangoDiasRD } from "@/lib/fecha-rd";
++import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
++import { sumarDesglose, totalTarjeta } from "@/lib/pagos";
+ import type { ResumenContable, Gasto } from "./types";
+ 
+ export async function getResumenContable(desde: string, hasta: string): Promise<ResumenContable> {
+   const supabase = await createClient();
+   const { desdeISO, hastaISO } = rangoDiasRD(desde, hasta);
+ 
+-  const [{ data: ventas }, { data: abonos }, { data: gastos }, { data: items }] = await Promise.all([
+-    supabase
+-      .from("ventas")
+-      .select("total, metodo_pago, fecha")
+-      .eq("estado", "completada")
+-      .gte("fecha", desdeISO)
+-      .lt("fecha", hastaISO),
+-    supabase.from("abonos").select("monto").gte("fecha", desdeISO).lt("fecha", hastaISO),
+-    supabase.from("gastos").select("monto, categoria_gasto").eq("activo", true).gte("fecha", desdeISO).lt("fecha", hastaISO),
++  // Todas las filas del período (antes se cortaba en 1000 ventas) y las
++  // ventas mixtas repartidas entre sus métodos.
++  const rango = { desde: desdeISO, hasta: hastaISO };
++  const [ventasRows, abonos, gastos, { data: items }] = await Promise.all([
++    ventasCompletadas(supabase, rango),
++    abonosDelRango(supabase, rango),
++    gastosDelRango(supabase, rango),
+     supabase
+       .from("venta_items")
+       .select("nombre_producto, cantidad, subtotal, ventas!inner(fecha, estado)")
+@@ -24,19 +24,19 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+       .eq("ventas.estado", "completada"),
+   ]);
+ 
+-  const ventasRows = ventas ?? [];
+-  const ventasTotal = ventasRows.reduce((s, v) => s + Number(v.total), 0);
+-  const porMetodo = { efectivo: 0, tarjeta: 0, transferencia: 0, fiado: 0 };
+-  for (const v of ventasRows) {
+-    const key = v.metodo_pago as keyof typeof porMetodo;
+-    if (key in porMetodo) porMetodo[key] += Number(v.total);
+-  }
+-
+-  const abonosCobrados = (abonos ?? []).reduce((s, a) => s + Number(a.monto), 0);
+-  const gastosTotal = (gastos ?? []).reduce((s, g) => s + Number(g.monto), 0);
++  const ventasTotal = ventasRows.reduce((s, v) => s + v.total, 0);
++  const desglose = sumarDesglose(ventasRows);
++  const porMetodo = {
++    efectivo: desglose.efectivo,
++    tarjeta: totalTarjeta(desglose),
++    transferencia: desglose.transferencia,
++    fiado: desglose.fiado,
++  };
++  const abonosCobrados = abonos.reduce((s, a) => s + a.monto, 0);
++  const gastosTotal = gastos.reduce((s, g) => s + g.monto, 0);
+ 
+   const gastosPorCatMap = new Map<string, number>();
+-  for (const g of gastos ?? []) {
++  for (const g of gastos) {
+     gastosPorCatMap.set(g.categoria_gasto, (gastosPorCatMap.get(g.categoria_gasto) ?? 0) + Number(g.monto));
+   }
+   const gastosPorCategoria = Array.from(gastosPorCatMap.entries())
+@@ -45,7 +45,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+ 
+   const porDiaMap = new Map<string, number>();
+   for (const v of ventasRows) {
+-    const key = v.fecha.slice(0, 10);
++    const key = fechaRD(v.fecha); // día en hora de RD, no en UTC
+     porDiaMap.set(key, (porDiaMap.get(key) ?? 0) + Number(v.total));
+   }
+   const ventasPorDia = Array.from(porDiaMap.entries())
+diff --git a/src/lib/dashboard/queries.ts b/src/lib/dashboard/queries.ts
+index e2d22ba..a7acc63 100644
+--- a/src/lib/dashboard/queries.ts
++++ b/src/lib/dashboard/queries.ts
+@@ -1,6 +1,8 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
+ import { fechaRD, hoyRD, inicioDiaRD, inicioMes, inicioMesAnterior, sumarDias } from "@/lib/fecha-rd";
++import { ventasCompletadas, devolucionesDelRango, type Rango } from "@/lib/ventas/movimientos";
++import { centavos, sumarDesglose, totalTarjeta } from "@/lib/pagos";
+ 
+ /** Turno de caja que define "el día" del dashboard. */
+ export type TurnoCaja = {
+@@ -11,10 +13,18 @@ export type TurnoCaja = {
+ export type DashboardStats = {
+   /** null si el negocio nunca ha abierto caja: entonces "hoy" es el día calendario. */
+   turno: TurnoCaja | null;
++  /** Venta neta del turno: facturado − devoluciones. Igual a "Venta neta" del cierre. */
+   ventasHoyTotal: number;
++  /** Facturado del turno antes de devoluciones ("Total vendido" del cierre). */
++  ventasHoyBruto: number;
++  ventasHoyDevoluciones: number;
+   ventasHoyEfectivo: number;
++  ventasHoyTarjeta: number;
++  ventasHoyTransferencia: number;
++  ventasHoyFiado: number;
+   ventasHoyCount: number;
+   ventasAyerTotal: number;
++  /** Ventas netas del mes (facturado − devoluciones), todos los métodos. */
+   ingresosMesTotal: number;
+   ingresosMesAnteriorTotal: number;
+   deudasPendientesTotal: number;
+@@ -92,66 +102,48 @@ async function getTurnos(supabase: SupabaseServer) {
+   return { actual, anterior };
+ }
+ 
+-function ventasCompletadasEntre(supabase: SupabaseServer, desde: string, hasta: string | null) {
+-  let query = supabase
+-    .from("ventas")
+-    .select("total, metodo_pago")
+-    .eq("estado", "completada")
+-    .gte("fecha", desde);
+-  if (hasta) query = query.lte("fecha", hasta);
+-  return query;
++/** Facturado, devoluciones y desglose por método de un rango. */
++async function resumenVentas(supabase: SupabaseServer, rango: Rango, conPagos = false) {
++  const [ventas, devoluciones] = await Promise.all([
++    ventasCompletadas(supabase, rango, conPagos),
++    devolucionesDelRango(supabase, rango),
++  ]);
++  const bruto = centavos(ventas.reduce((s, v) => s + v.total, 0));
++  const devuelto = centavos(devoluciones.reduce((s, d) => s + d.total_devuelto, 0));
++  return { ventas, bruto, devuelto, neto: centavos(bruto - devuelto) };
+ }
+ 
++const SIN_VENTAS = { ventas: [], bruto: 0, devuelto: 0, neto: 0 };
++
+ export async function getDashboardStats(): Promise<DashboardStats> {
+   const supabase = await createClient();
+   const { actual: turno, anterior: turnoAnterior } = await getTurnos(supabase);
+ 
+-  const consultaHoy = turno
+-    ? ventasCompletadasEntre(supabase, turno.abiertaAt, turno.cerradaAt)
+-    : ventasCompletadasEntre(supabase, inicioDeHoyISO(), null);
+-  const consultaAyer = turno
++  // Mismo rango que el cierre de caja: de la apertura al cierre del turno.
++  const rangoHoy: Rango = turno
++    ? { desde: turno.abiertaAt, hasta: turno.cerradaAt, hastaIncluido: true }
++    : { desde: inicioDeHoyISO(), hasta: null };
++  const rangoAyer: Rango | null = turno
+     ? turnoAnterior
+-      ? ventasCompletadasEntre(supabase, turnoAnterior.abiertaAt, turnoAnterior.cerradaAt)
+-      : Promise.resolve({ data: [] as { total: number; metodo_pago: string }[] })
+-    : supabase
+-        .from("ventas")
+-        .select("total, metodo_pago")
+-        .eq("estado", "completada")
+-        .gte("fecha", inicioDeAyerISO())
+-        .lt("fecha", inicioDeHoyISO());
+-
+-  const [ventasHoy, ventasAyer, ventasMes, ventasMesAnterior, clientes, productos] = await Promise.all([
+-    consultaHoy,
+-    consultaAyer,
+-    supabase
+-      .from("ventas")
+-      .select("total")
+-      .eq("estado", "completada")
+-      .gte("fecha", inicioDeMesISO()),
+-    supabase
+-      .from("ventas")
+-      .select("total")
+-      .eq("estado", "completada")
+-      .gte("fecha", inicioDeMesAnteriorISO())
+-      .lt("fecha", inicioDeMesISO()),
++      ? { desde: turnoAnterior.abiertaAt, hasta: turnoAnterior.cerradaAt, hastaIncluido: true }
++      : null
++    : { desde: inicioDeAyerISO(), hasta: inicioDeHoyISO() };
++
++  const [hoy, ayer, mes, mesAnterior, clientes, productos] = await Promise.all([
++    resumenVentas(supabase, rangoHoy, true),
++    rangoAyer ? resumenVentas(supabase, rangoAyer) : Promise.resolve(SIN_VENTAS),
++    resumenVentas(supabase, { desde: inicioDeMesISO(), hasta: null }),
++    resumenVentas(supabase, { desde: inicioDeMesAnteriorISO(), hasta: inicioDeMesISO() }),
+     supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0),
+     supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true),
+   ]);
+ 
+-  const hoyRows = ventasHoy.data ?? [];
+-  const ventasHoyTotal = hoyRows.reduce((s, v) => s + Number(v.total), 0);
+-  const ventasHoyEfectivo = hoyRows
+-    .filter((v) => v.metodo_pago === "efectivo")
+-    .reduce((s, v) => s + Number(v.total), 0);
+-  const ventasHoyCount = hoyRows.length;
++  const desgloseHoy = sumarDesglose(hoy.ventas);
++  const ventasHoyCount = hoy.ventas.length;
+   // Una atención por cada venta, no por cliente distinto: si el mismo
+   // cliente (o "Cliente general") compra varias veces, cada compra cuenta.
+   const clientesAtendidosHoy = ventasHoyCount;
+ 
+-  const ventasAyerTotal = (ventasAyer.data ?? []).reduce((s, v) => s + Number(v.total), 0);
+-  const ingresosMesTotal = (ventasMes.data ?? []).reduce((s, v) => s + Number(v.total), 0);
+-  const ingresosMesAnteriorTotal = (ventasMesAnterior.data ?? []).reduce((s, v) => s + Number(v.total), 0);
+-
+   const deudaRows = clientes.data ?? [];
+   const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
+ 
+@@ -163,18 +155,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+ 
+   return {
+     turno,
+-    ventasHoyTotal,
+-    ventasHoyEfectivo,
++    ventasHoyTotal: hoy.neto,
++    ventasHoyBruto: hoy.bruto,
++    ventasHoyDevoluciones: hoy.devuelto,
++    ventasHoyEfectivo: desgloseHoy.efectivo,
++    ventasHoyTarjeta: totalTarjeta(desgloseHoy),
++    ventasHoyTransferencia: desgloseHoy.transferencia,
++    ventasHoyFiado: desgloseHoy.fiado,
+     ventasHoyCount,
+-    ventasAyerTotal,
+-    ingresosMesTotal,
+-    ingresosMesAnteriorTotal,
++    ventasAyerTotal: ayer.neto,
++    ingresosMesTotal: mes.neto,
++    ingresosMesAnteriorTotal: mesAnterior.neto,
+     deudasPendientesTotal,
+     clientesConDeuda: deudaRows.length,
+     productosBajos: productosAgotados + productosStockBajoNoAgotados,
+     productosAgotados,
+     productosStockBajoNoAgotados,
+-    ticketPromedio: ventasHoyCount > 0 ? ventasHoyTotal / ventasHoyCount : 0,
++    ticketPromedio: ventasHoyCount > 0 ? centavos(hoy.bruto / ventasHoyCount) : 0,
+     clientesAtendidosHoy,
+   };
+ }
+@@ -182,23 +179,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+ export async function getVentasUltimosDias(dias: number): Promise<VentaDia[]> {
+   const supabase = await createClient();
+   const desde = sumarDias(hoyRD(), -(dias - 1));
+-
+-  const { data } = await supabase
+-    .from("ventas")
+-    .select("total, fecha")
+-    .eq("estado", "completada")
+-    .gte("fecha", inicioDiaRD(desde));
++  const { ventas, devoluciones } = await ventasYDevoluciones(supabase, inicioDiaRD(desde));
+ 
+   const porDia = new Map<string, number>();
+   for (let i = 0; i < dias; i++) {
+     porDia.set(sumarDias(desde, i), 0);
+   }
+-  for (const v of data ?? []) {
++  for (const v of ventas) {
+     const key = fechaRD(v.fecha);
+-    if (porDia.has(key)) porDia.set(key, (porDia.get(key) ?? 0) + Number(v.total));
++    if (porDia.has(key)) porDia.set(key, (porDia.get(key) ?? 0) + v.total);
++  }
++  // Las devoluciones se restan el día en que se hicieron.
++  for (const d of devoluciones) {
++    const key = fechaRD(d.fecha);
++    if (porDia.has(key)) porDia.set(key, (porDia.get(key) ?? 0) - d.total_devuelto);
+   }
+ 
+-  return Array.from(porDia.entries()).map(([fecha, total]) => ({ fecha, total }));
++  return Array.from(porDia.entries()).map(([fecha, total]) => ({ fecha, total: centavos(total) }));
++}
++
++async function ventasYDevoluciones(supabase: SupabaseServer, desdeISO: string) {
++  const rango: Rango = { desde: desdeISO, hasta: null };
++  const [ventas, devoluciones] = await Promise.all([
++    ventasCompletadas(supabase, rango, false),
++    devolucionesDelRango(supabase, rango),
++  ]);
++  return { ventas, devoluciones };
+ }
+ 
+ export async function getUltimasVentas(limit = 8): Promise<UltimaVenta[]> {
+@@ -227,27 +233,25 @@ const MESES_CORTOS = [
+ 
+ export async function getComparativaAnual(): Promise<MesComparativo[]> {
+   const supabase = await createClient();
+-  const hoy = new Date();
+-  const anioActual = hoy.getFullYear();
+-  const desde = new Date(anioActual - 1, 0, 1);
+-
+-  const { data } = await supabase
+-    .from("ventas")
+-    .select("total, fecha")
+-    .eq("estado", "completada")
+-    .gte("fecha", desde.toISOString());
++  // Año y mes en hora de RD (el servidor está en UTC: una venta del 31 a las
++  // 9:00 p. m. caía en el mes siguiente).
++  const hoy = hoyRD();
++  const anioActual = Number(hoy.slice(0, 4));
++  const { ventas, devoluciones } = await ventasYDevoluciones(supabase, inicioDiaRD(`${anioActual - 1}-01-01`));
+ 
+   const porMes = new Map<string, number>();
+-  for (const v of data ?? []) {
+-    const fecha = new Date(v.fecha);
+-    const key = `${fecha.getFullYear()}-${fecha.getMonth()}`;
+-    porMes.set(key, (porMes.get(key) ?? 0) + Number(v.total));
+-  }
++  const sumar = (fecha: string, monto: number) => {
++    const dia = fechaRD(fecha);
++    const key = `${Number(dia.slice(0, 4))}-${Number(dia.slice(5, 7)) - 1}`;
++    porMes.set(key, (porMes.get(key) ?? 0) + monto);
++  };
++  for (const v of ventas) sumar(v.fecha, v.total);
++  for (const d of devoluciones) sumar(d.fecha, -d.total_devuelto);
+ 
+   return MESES_CORTOS.map((mes, i) => ({
+     mes,
+-    esteAnio: porMes.get(`${anioActual}-${i}`) ?? 0,
+-    anioPasado: porMes.get(`${anioActual - 1}-${i}`) ?? 0,
++    esteAnio: centavos(porMes.get(`${anioActual}-${i}`) ?? 0),
++    anioPasado: centavos(porMes.get(`${anioActual - 1}-${i}`) ?? 0),
+   }));
+ }
+ 
+diff --git a/src/lib/offline/db.ts b/src/lib/offline/db.ts
+index a8e73a4..b4cd394 100644
+--- a/src/lib/offline/db.ts
++++ b/src/lib/offline/db.ts
+@@ -1,6 +1,7 @@
+ "use client";
+ 
+ import type { Producto, Cliente, MetodoPago } from "@/lib/pos/types";
++import type { PagoParte, TipoTarjeta } from "@/lib/pagos";
+ import type { ProductoInventario, Categoria, Proveedor } from "@/lib/inventario/types";
+ 
+ const DB_NAME = "ventatech-offline";
+@@ -43,6 +44,10 @@ export type VentaPendiente = {
+   clienteId: string | null;
+   clienteNombre: string;
+   metodoPago: MetodoPago;
++  /** Tarjeta: débito o crédito. */
++  tipoTarjeta?: TipoTarjeta | null;
++  /** Pago mixto: cuánto se pagó con cada método. */
++  pagos?: PagoParte[];
+   descuento: number;
+   subtotal: number;
+   total: number;
+diff --git a/src/lib/offline/sync.ts b/src/lib/offline/sync.ts
+index 7afebaa..7738ca6 100644
+--- a/src/lib/offline/sync.ts
++++ b/src/lib/offline/sync.ts
+@@ -37,6 +37,8 @@ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
+           items: venta.items,
+           clienteId: venta.clienteId,
+           metodoPago: venta.metodoPago,
++          tipoTarjeta: venta.tipoTarjeta ?? null,
++          pagos: venta.pagos,
+           descuento: venta.descuento,
+           localId: venta.localId,
+         });
+diff --git a/src/lib/pagos.ts b/src/lib/pagos.ts
+new file mode 100644
+index 0000000..107b003
+--- /dev/null
++++ b/src/lib/pagos.ts
+@@ -0,0 +1,165 @@
++// Desglose del pago de cada venta: cuánto entró en efectivo, en tarjeta
++// (débito o crédito), en transferencia o a fiado.
++//
++// Las ventas con tarjeta o con pago mixto guardan sus partes en la tabla
++// `venta_pagos`. Las ventas viejas (o las de un solo método sin partes
++// guardadas) se cuentan completas en su `metodo_pago`, como antes.
++//
++// Este archivo no usa nada del servidor: lo usan también el POS y el
++// historial en el navegador.
++
++export type MetodoParte = "efectivo" | "tarjeta" | "transferencia";
++export type TipoTarjeta = "debito" | "credito";
++
++export type PagoParte = {
++  metodo: MetodoParte;
++  tipoTarjeta?: TipoTarjeta | null;
++  monto: number;
++};
++
++/** Fila de `venta_pagos` tal como llega de Supabase. */
++export type PagoFila = {
++  metodo: string;
++  tipo_tarjeta: string | null;
++  monto: number | string;
++};
++
++/** Claves del desglose usadas en caja, dashboard y reportes. */
++export type ClaveDesglose =
++  | "efectivo"
++  | "tarjeta_debito"
++  | "tarjeta_credito"
++  | "tarjeta"
++  | "transferencia"
++  | "fiado";
++
++export type Desglose = Record<ClaveDesglose, number>;
++
++export const ORDEN_DESGLOSE: ClaveDesglose[] = [
++  "efectivo",
++  "tarjeta_debito",
++  "tarjeta_credito",
++  "tarjeta",
++  "transferencia",
++  "fiado",
++];
++
++export const ETIQUETA_DESGLOSE: Record<ClaveDesglose, string> = {
++  efectivo: "Efectivo",
++  tarjeta_debito: "Tarjeta débito",
++  tarjeta_credito: "Tarjeta crédito",
++  tarjeta: "Tarjeta (sin tipo)",
++  transferencia: "Transferencia",
++  fiado: "Fiado (a crédito)",
++};
++
++export function desgloseVacio(): Desglose {
++  return {
++    efectivo: 0,
++    tarjeta_debito: 0,
++    tarjeta_credito: 0,
++    tarjeta: 0,
++    transferencia: 0,
++    fiado: 0,
++  };
++}
++
++/** Redondea a centavos para que las sumas no arrastren decimales sueltos. */
++export function centavos(n: number): number {
++  return Math.round(n * 100) / 100;
++}
++
++function claveDe(metodo: string, tipoTarjeta: string | null | undefined): ClaveDesglose | null {
++  if (metodo === "efectivo") return "efectivo";
++  if (metodo === "transferencia") return "transferencia";
++  if (metodo === "fiado") return "fiado";
++  if (metodo === "tarjeta") {
++    if (tipoTarjeta === "debito") return "tarjeta_debito";
++    if (tipoTarjeta === "credito") return "tarjeta_credito";
++    return "tarjeta";
++  }
++  return null;
++}
++
++/**
++ * Reparte el total de una venta entre los métodos con que se pagó.
++ * Si la venta tiene partes guardadas se usan esas; si no, todo el total va
++ * a su `metodo_pago`.
++ */
++export function desglosarVenta(venta: {
++  total: number | string;
++  metodo_pago: string;
++  venta_pagos?: PagoFila[] | null;
++}): Partial<Desglose> {
++  const total = Number(venta.total);
++  const partes = venta.venta_pagos ?? [];
++  const resultado: Partial<Desglose> = {};
++
++  if (partes.length > 0) {
++    let asignado = 0;
++    for (const p of partes) {
++      const clave = claveDe(p.metodo, p.tipo_tarjeta);
++      if (!clave) continue;
++      const monto = Number(p.monto);
++      resultado[clave] = (resultado[clave] ?? 0) + monto;
++      asignado += monto;
++    }
++    // Las partes siempre suman el total de la venta; si por algo no fuera
++    // así (venta editada a mano), la diferencia se deja en el método
++    // principal para que el total vendido nunca cambie.
++    const resto = centavos(total - asignado);
++    if (resto !== 0) {
++      const clave = claveDe(venta.metodo_pago, null) ?? "efectivo";
++      resultado[clave] = (resultado[clave] ?? 0) + resto;
++    }
++    return resultado;
++  }
++
++  // "mixto" sin partes no debería existir; se cuenta como efectivo.
++  const clave = claveDe(venta.metodo_pago, null) ?? "efectivo";
++  resultado[clave] = total;
++  return resultado;
++}
++
++/** Suma el desglose de muchas ventas. */
++export function sumarDesglose(
++  ventas: { total: number | string; metodo_pago: string; venta_pagos?: PagoFila[] | null }[]
++): Desglose {
++  const total = desgloseVacio();
++  for (const v of ventas) {
++    const d = desglosarVenta(v);
++    for (const clave of ORDEN_DESGLOSE) total[clave] += d[clave] ?? 0;
++  }
++  for (const clave of ORDEN_DESGLOSE) total[clave] = centavos(total[clave]);
++  return total;
++}
++
++/** Tarjeta de cualquier tipo (débito + crédito + sin tipo). */
++export function totalTarjeta(d: Desglose): number {
++  return centavos(d.tarjeta_debito + d.tarjeta_credito + d.tarjeta);
++}
++
++/** Texto corto del método de pago de una venta, para listas y tickets. */
++export function textoMetodoPago(metodo: string, partes?: PagoFila[] | null): string {
++  const lista = partes ?? [];
++  if (lista.length === 0) {
++    return metodo === "mixto" ? "Mixto" : metodo;
++  }
++  if (lista.length === 1 && metodo !== "mixto") {
++    const clave = claveDe(lista[0].metodo, lista[0].tipo_tarjeta);
++    return clave ? ETIQUETA_DESGLOSE[clave].replace(" (sin tipo)", "") : metodo;
++  }
++  return "Mixto";
++}
++
++/** Líneas "Tarjeta débito  RD$ 300.00" para tickets y el detalle de la venta. */
++export function lineasPago(partes: (PagoParte | PagoFila)[]): { etiqueta: string; monto: number }[] {
++  return partes.map((p) => {
++    const tipo = "tipoTarjeta" in p ? p.tipoTarjeta : (p as PagoFila).tipo_tarjeta;
++    const clave = claveDe(p.metodo, tipo) ?? "efectivo";
++    return {
++      etiqueta: ETIQUETA_DESGLOSE[clave].replace(" (sin tipo)", ""),
++      monto: Number(p.monto),
++    };
++  });
++}
+diff --git a/src/lib/pos/escpos.ts b/src/lib/pos/escpos.ts
+index 9383c73..d7a9df0 100644
+--- a/src/lib/pos/escpos.ts
++++ b/src/lib/pos/escpos.ts
+@@ -46,6 +46,7 @@ export function construirTicketESCPOS(datos: {
+   cajero: string;
+   cliente: string;
+   metodoPago: string;
++  pagos?: { etiqueta: string; monto: number }[];
+   items: { nombre: string; cantidad: number; subtotal: number }[];
+   subtotal: number;
+   descuento: number;
+@@ -102,6 +103,9 @@ export function construirTicketESCPOS(datos: {
+   partes.push(texto(linea("TOTAL", datos.formatMoney(datos.total))));
+   partes.push(new Uint8Array([ESC, 0x45, 0]));
+   partes.push(texto(linea("Metodo", datos.metodoPago)));
++  for (const p of datos.pagos ?? []) {
++    partes.push(texto(linea(`  ${p.etiqueta}`, datos.formatMoney(p.monto))));
++  }
+   if (datos.montoRecibido !== undefined) {
+     partes.push(texto(linea("Recibido", datos.formatMoney(datos.montoRecibido))));
+   }
+@@ -130,12 +134,9 @@ export function construirTicketCierreCajaESCPOS(datos: {
+   cajero: string;
+   abiertaAt: string;
+   cerradaAt: string;
+-  montoInicial: number;
+-  ventasEfectivo: number;
+-  ventasTotal?: number;
+-  esperado: number;
+   montoContado: number;
+   diferencia: number;
++  secciones: { titulo: string; nota?: string; lineas: { texto: string; monto: number; fuerte?: boolean }[] }[];
+   formatMoney: (n: number) => string;
+ }): Uint8Array {
+   const ancho = anchoCaracteresPapel();
+@@ -144,13 +145,14 @@ export function construirTicketCierreCajaESCPOS(datos: {
+     const espacio = Math.max(1, ancho - izq.length - der.length);
+     return izq + " ".repeat(espacio) + der + "\n";
+   };
++  const negrita = (on: boolean) => new Uint8Array([ESC, 0x45, on ? 1 : 0]);
+ 
+   const partes: Uint8Array[] = [
+     new Uint8Array([ESC, 0x40]),
+     new Uint8Array([ESC, 0x61, 1]),
+-    new Uint8Array([ESC, 0x45, 1]),
++    negrita(true),
+     texto(`${datos.negocioNombre ?? "VentaTech"}\n`),
+-    new Uint8Array([ESC, 0x45, 0]),
++    negrita(false),
+     texto("Cierre de caja\n"),
+     new Uint8Array([ESC, 0x61, 0]),
+     texto(separador),
+@@ -158,29 +160,38 @@ export function construirTicketCierreCajaESCPOS(datos: {
+     texto(`Apertura: ${new Date(datos.abiertaAt).toLocaleString("es-DO")}\n`),
+     texto(`Cierre: ${new Date(datos.cerradaAt).toLocaleString("es-DO")}\n`),
+     texto(separador),
+-    texto(linea("Monto inicial", datos.formatMoney(datos.montoInicial))),
+-    texto(linea("Ventas efectivo", datos.formatMoney(datos.ventasEfectivo))),
+-    new Uint8Array([ESC, 0x45, 1]),
+-    texto(linea("Esperado", datos.formatMoney(datos.esperado))),
+-    new Uint8Array([ESC, 0x45, 0]),
+-    texto(linea("Contado", datos.formatMoney(datos.montoContado))),
+-    new Uint8Array([ESC, 0x45, 1]),
+-    texto(
+-      linea(
+-        datos.diferencia === 0 ? "Cuadre exacto" : datos.diferencia > 0 ? "Sobrante" : "Faltante",
+-        datos.formatMoney(Math.abs(datos.diferencia))
+-      )
+-    ),
+-    new Uint8Array([ESC, 0x45, 0]),
+-    texto(separador),
+-    ...(datos.ventasTotal !== undefined
+-      ? [texto(linea("Total vendido", datos.formatMoney(datos.ventasTotal))), texto(separador)]
+-      : []),
++  ];
++
++  datos.secciones.forEach((seccion, i) => {
++    partes.push(negrita(true), texto(`${seccion.titulo.toUpperCase()}\n`), negrita(false));
++    if (seccion.nota) partes.push(texto(`${seccion.nota}\n`));
++    for (const l of seccion.lineas) {
++      if (l.fuerte) partes.push(negrita(true));
++      partes.push(texto(linea(l.texto, datos.formatMoney(l.monto))));
++      if (l.fuerte) partes.push(negrita(false));
++    }
++    if (i === 0) {
++      partes.push(texto(linea("Contado", datos.formatMoney(datos.montoContado))));
++      partes.push(negrita(true));
++      partes.push(
++        texto(
++          linea(
++            datos.diferencia === 0 ? "Cuadre exacto" : datos.diferencia > 0 ? "Sobrante" : "Faltante",
++            datos.formatMoney(Math.abs(datos.diferencia))
++          )
++        )
++      );
++      partes.push(negrita(false));
++    }
++    partes.push(texto(separador));
++  });
++
++  partes.push(
+     new Uint8Array([ESC, 0x61, 1]),
+     texto("Firma cajero: ______________\n"),
+     new Uint8Array([ESC, 0x64, 4]),
+-    new Uint8Array([GS, 0x56, 1]),
+-  ];
++    new Uint8Array([GS, 0x56, 1])
++  );
+ 
+   return concat(partes);
+ }
+diff --git a/src/lib/pos/print.ts b/src/lib/pos/print.ts
+index 440f765..2279c46 100644
+--- a/src/lib/pos/print.ts
++++ b/src/lib/pos/print.ts
+@@ -17,6 +17,8 @@ export type FacturaData = {
+   cajero: string;
+   cliente: string;
+   metodoPago: string;
++  /** Pago mixto: cuánto se pagó con cada método. */
++  pagos?: { etiqueta: string; monto: number }[];
+   items: { nombre: string; cantidad: number; subtotal: number }[];
+   subtotal: number;
+   descuento: number;
+@@ -103,7 +105,10 @@ function imprimirFacturaNavegador(datos: FacturaData) {
+               : ""
+           }
+           <tr class="grande"><td>TOTAL</td><td class="right">${formatMoney(datos.total)}</td></tr>
+-          <tr><td>Método</td><td class="right">${datos.metodoPago}</td></tr>
++          <tr><td>Método</td><td class="right">${escapeHtml(datos.metodoPago)}</td></tr>
++          ${(datos.pagos ?? [])
++            .map((p) => `<tr><td>&nbsp;&nbsp;${escapeHtml(p.etiqueta)}</td><td class="right">${formatMoney(p.monto)}</td></tr>`)
++            .join("")}
+           ${
+             datos.montoRecibido !== undefined
+               ? `<tr><td>Recibido</td><td class="right">${formatMoney(datos.montoRecibido)}</td></tr>`
+diff --git a/src/lib/pos/printCaja.ts b/src/lib/pos/printCaja.ts
+index b77eb07..4f069e0 100644
+--- a/src/lib/pos/printCaja.ts
++++ b/src/lib/pos/printCaja.ts
+@@ -1,4 +1,5 @@
+ import { formatMoney } from "@/lib/money";
++import { efectivoEsperado, seccionesCierre, type CuadreTurno } from "@/lib/caja/cuadre";
+ import { construirTicketCierreCajaESCPOS, imprimirESCPOS } from "./escpos";
+ 
+ function escapeHtml(value: string) {
+@@ -14,16 +15,15 @@ export type CierreCajaData = {
+   abiertaAt: string;
+   cerradaAt: string;
+   montoInicial: number;
+-  ventasEfectivo: number;
+-  /** Todo lo vendido en el turno (todos los métodos). */
+-  ventasTotal?: number;
++  /** Ventas por método, abonos, devoluciones y gastos del turno. */
++  cuadre: CuadreTurno;
+   montoContado: number;
+ };
+ 
+ function conDerivados(d: CierreCajaData) {
+-  const esperado = d.montoInicial + d.ventasEfectivo;
+-  const diferencia = d.montoContado - esperado;
+-  return { ...d, esperado, diferencia };
++  const esperado = efectivoEsperado(d.montoInicial, d.cuadre);
++  const diferencia = Math.round((d.montoContado - esperado) * 100) / 100;
++  return { ...d, esperado, diferencia, secciones: seccionesCierre(d.cuadre, d.montoInicial) };
+ }
+ 
+ export async function imprimirCierreCaja(datos: CierreCajaData) {
+@@ -42,6 +42,29 @@ function imprimirCierreCajaNavegador(d: ReturnType<typeof conDerivados>) {
+   const etiquetaDif = d.diferencia === 0 ? "Cuadre exacto" : d.diferencia > 0 ? "Sobrante" : "Faltante";
+   const colorDif = d.diferencia === 0 ? "#555" : d.diferencia > 0 ? "#1b7f43" : "#c62828";
+ 
++  const secciones = d.secciones
++    .map(
++      (s, i) => `
++        <p class="titulo">${escapeHtml(s.titulo)}</p>
++        ${s.nota ? `<p class="nota">${escapeHtml(s.nota)}</p>` : ""}
++        <table>
++          ${s.lineas
++            .map(
++              (l) =>
++                `<tr class="${l.fuerte ? "grande" : ""}"><td>${escapeHtml(l.texto)}</td><td class="right">${formatMoney(l.monto)}</td></tr>`
++            )
++            .join("")}
++          ${
++            i === 0
++              ? `<tr><td>Contado</td><td class="right">${formatMoney(d.montoContado)}</td></tr>
++          <tr class="grande" style="color:${colorDif}"><td>${etiquetaDif}</td><td class="right">${formatMoney(Math.abs(d.diferencia))}</td></tr>`
++              : ""
++          }
++        </table>
++        <hr />`
++    )
++    .join("");
++
+   ventana.document.write(`
+     <html>
+       <head>
+@@ -50,11 +73,13 @@ function imprimirCierreCajaNavegador(d: ReturnType<typeof conDerivados>) {
+           body { font-family: monospace; width: ${ancho}; margin: 0 auto; padding: 8px; font-size: 12px; }
+           h1 { font-size: 14px; text-align: center; margin: 0 0 2px; }
+           p { margin: 2px 0; }
+-          table { width: 100%; border-collapse: collapse; margin-top: 6px; }
++          .titulo { font-weight: bold; text-transform: uppercase; margin-top: 4px; }
++          .nota { font-size: 10px; }
++          table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+           td { padding: 2px 0; font-size: 12px; }
+           hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+           .right { text-align: right; }
+-          .grande td { font-size: 14px; font-weight: bold; }
++          .grande td { font-size: 13px; font-weight: bold; }
+         </style>
+       </head>
+       <body>
+@@ -65,21 +90,7 @@ function imprimirCierreCajaNavegador(d: ReturnType<typeof conDerivados>) {
+         <p>Apertura: ${new Date(d.abiertaAt).toLocaleString("es-DO")}</p>
+         <p>Cierre: ${new Date(d.cerradaAt).toLocaleString("es-DO")}</p>
+         <hr />
+-        <table>
+-          <tr><td>Monto inicial</td><td class="right">${formatMoney(d.montoInicial)}</td></tr>
+-          <tr><td>Ventas efectivo</td><td class="right">${formatMoney(d.ventasEfectivo)}</td></tr>
+-          <tr class="grande"><td>Esperado</td><td class="right">${formatMoney(d.esperado)}</td></tr>
+-          <tr><td>Contado</td><td class="right">${formatMoney(d.montoContado)}</td></tr>
+-          <tr class="grande" style="color:${colorDif}">
+-            <td>${etiquetaDif}</td><td class="right">${formatMoney(Math.abs(d.diferencia))}</td>
+-          </tr>
+-        </table>
+-        ${
+-          d.ventasTotal !== undefined
+-            ? `<hr /><table><tr><td>Total vendido (todos los métodos)</td><td class="right">${formatMoney(d.ventasTotal)}</td></tr></table>`
+-            : ""
+-        }
+-        <hr />
++        ${secciones}
+         <p style="text-align:center">Firma cajero: ______________</p>
+       </body>
+     </html>
+diff --git a/src/lib/pos/queries.ts b/src/lib/pos/queries.ts
+index 2827a37..2f686a4 100644
+--- a/src/lib/pos/queries.ts
++++ b/src/lib/pos/queries.ts
+@@ -1,6 +1,7 @@
+ import "server-only";
+ import { createClient } from "@/lib/supabase/server";
+ import type { Producto, Cliente } from "./types";
++import { getCajaActual } from "@/lib/caja/queries";
+ 
+ export async function getProductosActivos(): Promise<Producto[]> {
+   const supabase = await createClient();
+@@ -36,28 +37,9 @@ export async function getClientesActivos(): Promise<Cliente[]> {
+   return (data ?? []) as Cliente[];
+ }
+ 
++// Misma cuenta que la pantalla de Caja (ventas por método, abonos,
++// devoluciones y gastos del turno), para que el cierre desde el POS cuadre
++// igual que desde Caja.
+ export async function getCajaAbierta() {
+-  const supabase = await createClient();
+-  const { data } = await supabase
+-    .from("caja")
+-    .select("id, monto_inicial, abierta_at")
+-    .eq("estado", "abierta")
+-    .order("abierta_at", { ascending: false })
+-    .limit(1);
+-
+-  const caja = data?.[0] ?? null;
+-  if (!caja) return null;
+-
+-  const { data: ventas } = await supabase
+-    .from("ventas")
+-    .select("total, metodo_pago")
+-    .eq("estado", "completada")
+-    .gte("fecha", caja.abierta_at);
+-
+-  const ventasEfectivo = (ventas ?? [])
+-    .filter((v) => v.metodo_pago === "efectivo")
+-    .reduce((s, v) => s + Number(v.total), 0);
+-  const ventasTotal = (ventas ?? []).reduce((s, v) => s + Number(v.total), 0);
+-
+-  return { ...caja, ventas_efectivo: ventasEfectivo, ventas_total: ventasTotal };
++  return getCajaActual();
+ }
+diff --git a/src/lib/pos/types.ts b/src/lib/pos/types.ts
+index 7dc9442..d251d0e 100644
+--- a/src/lib/pos/types.ts
++++ b/src/lib/pos/types.ts
+@@ -52,4 +52,6 @@ export function precioEfectivo(
+   return precioNormal;
+ }
+ 
+-export type MetodoPago = "efectivo" | "tarjeta" | "transferencia" | "fiado";
++// "mixto": parte en efectivo, parte en tarjeta y/o transferencia. Las partes
++// se guardan en la tabla `venta_pagos` (ver src/lib/pagos.ts).
++export type MetodoPago = "efectivo" | "tarjeta" | "transferencia" | "fiado" | "mixto";
+diff --git a/src/lib/ventas/movimientos.ts b/src/lib/ventas/movimientos.ts
+new file mode 100644
+index 0000000..76ac594
+--- /dev/null
++++ b/src/lib/ventas/movimientos.ts
+@@ -0,0 +1,138 @@
++import "server-only";
++import { createClient } from "@/lib/supabase/server";
++import {
++  calcularCuadre,
++  type AbonoMov,
++  type CuadreTurno,
++  type DevolucionMov,
++  type GastoMov,
++  type VentaMov,
++} from "@/lib/caja/cuadre";
++
++export type { AbonoMov, CuadreTurno, DevolucionMov, GastoMov, VentaMov } from "@/lib/caja/cuadre";
++
++type SupabaseServer = Awaited<ReturnType<typeof createClient>>;
++
++// Supabase devuelve como máximo 1000 filas por consulta. Las sumas del mes,
++// del gráfico de 30 días y de la comparación anual se quedaban cortas en
++// cuanto había más de 1000 ventas: por eso se traen por páginas.
++const PAGINA = 1000;
++const MAX_PAGINAS = 200;
++
++type Resultado<T> = { data: T[] | null; error: { message: string } | null };
++
++async function traerTodas<T>(
++  armar: (desde: number, hasta: number) => PromiseLike<Resultado<T>>
++): Promise<{ data: T[]; error: { message: string } | null }> {
++  const filas: T[] = [];
++  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
++    const desde = pagina * PAGINA;
++    const { data, error } = await armar(desde, desde + PAGINA - 1);
++    if (error) return { data: filas, error };
++    const lote = data ?? [];
++    filas.push(...lote);
++    if (lote.length < PAGINA) break;
++  }
++  return { data: filas, error: null };
++}
++
++/** Rango de tiempo: `hasta` null = hasta ahora. */
++export type Rango = { desde: string; hasta: string | null; hastaIncluido?: boolean };
++
++/** Ventas completadas del rango, con el desglose de pagos si existe. */
++export async function ventasCompletadas(
++  supabase: SupabaseServer,
++  rango: Rango,
++  conPagos = true
++): Promise<VentaMov[]> {
++  const consultar = (columnas: string) =>
++    traerTodas<VentaMov>((a, b) => {
++      let q = supabase.from("ventas").select(columnas).eq("estado", "completada").gte("fecha", rango.desde);
++      if (rango.hasta) q = rango.hastaIncluido ? q.lte("fecha", rango.hasta) : q.lt("fecha", rango.hasta);
++      return q.order("fecha", { ascending: true }).order("id", { ascending: true }).range(a, b) as unknown as PromiseLike<
++        Resultado<VentaMov>
++      >;
++    });
++
++  let res = conPagos
++    ? await consultar("total, metodo_pago, fecha, venta_pagos(metodo, tipo_tarjeta, monto)")
++    : await consultar("total, metodo_pago, fecha");
++  if (res.error && conPagos) {
++    // Si todavía no se ejecutó el SQL de pagos mixtos, la tabla no existe:
++    // se sigue funcionando como antes, sin desglose.
++    res = await consultar("total, metodo_pago, fecha");
++  }
++  return res.data.map((v) => ({
++    total: Number(v.total),
++    metodo_pago: v.metodo_pago,
++    fecha: v.fecha,
++    venta_pagos: v.venta_pagos ?? null,
++  }));
++}
++
++/**
++ * Devoluciones del rango. Solo cuentan las de ventas que siguen
++ * "completadas": si una devolución total cambia el estado de la venta, esa
++ * venta ya no suma, y restar la devolución sería descontarla dos veces.
++ */
++export async function devolucionesDelRango(supabase: SupabaseServer, rango: Rango): Promise<DevolucionMov[]> {
++  const consultar = (columnas: string, conFiltro: boolean) =>
++    traerTodas<DevolucionMov>((a, b) => {
++      let q = supabase.from("devoluciones").select(columnas).gte("fecha", rango.desde);
++      if (conFiltro) q = q.eq("ventas.estado", "completada");
++      if (rango.hasta) q = rango.hastaIncluido ? q.lte("fecha", rango.hasta) : q.lt("fecha", rango.hasta);
++      return q.order("fecha", { ascending: true }).order("id", { ascending: true }).range(a, b) as unknown as PromiseLike<
++        Resultado<DevolucionMov>
++      >;
++    });
++
++  let res = await consultar("total_devuelto, metodo_devolucion, fecha, ventas!inner(estado)", true);
++  if (res.error) res = await consultar("total_devuelto, metodo_devolucion, fecha", false);
++  return res.data.map((d) => ({
++    total_devuelto: Number(d.total_devuelto),
++    metodo_devolucion: d.metodo_devolucion,
++    fecha: d.fecha,
++  }));
++}
++
++export async function abonosDelRango(supabase: SupabaseServer, rango: Rango): Promise<AbonoMov[]> {
++  const res = await traerTodas<AbonoMov>((a, b) => {
++    let q = supabase.from("abonos").select("monto, metodo_pago, fecha").gte("fecha", rango.desde);
++    if (rango.hasta) q = rango.hastaIncluido ? q.lte("fecha", rango.hasta) : q.lt("fecha", rango.hasta);
++    return q.order("fecha", { ascending: true }).order("id", { ascending: true }).range(a, b) as unknown as PromiseLike<
++      Resultado<AbonoMov>
++    >;
++  });
++  return res.data.map((x) => ({ monto: Number(x.monto), metodo_pago: x.metodo_pago, fecha: x.fecha }));
++}
++
++export async function gastosDelRango(supabase: SupabaseServer, rango: Rango): Promise<GastoMov[]> {
++  const res = await traerTodas<GastoMov>((a, b) => {
++    let q = supabase
++      .from("gastos")
++      .select("monto, metodo_pago, fecha, categoria_gasto")
++      .eq("activo", true)
++      .gte("fecha", rango.desde);
++    if (rango.hasta) q = rango.hastaIncluido ? q.lte("fecha", rango.hasta) : q.lt("fecha", rango.hasta);
++    return q.order("fecha", { ascending: true }).order("id", { ascending: true }).range(a, b) as unknown as PromiseLike<
++      Resultado<GastoMov>
++    >;
++  });
++  return res.data.map((x) => ({
++    monto: Number(x.monto),
++    metodo_pago: x.metodo_pago,
++    fecha: x.fecha,
++    categoria_gasto: x.categoria_gasto,
++  }));
++}
++
++/** Trae y calcula todos los movimientos de un rango (un turno de caja). */
++export async function cuadreDelRango(supabase: SupabaseServer, rango: Rango): Promise<CuadreTurno> {
++  const [ventas, devoluciones, abonos, gastos] = await Promise.all([
++    ventasCompletadas(supabase, rango),
++    devolucionesDelRango(supabase, rango),
++    abonosDelRango(supabase, rango),
++    gastosDelRango(supabase, rango),
++  ]);
++  return calcularCuadre({ ventas, devoluciones, abonos, gastos });
++}

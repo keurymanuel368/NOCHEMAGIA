@@ -1,0 +1,77 @@
+# VentaTech: pagos mixtos, cierre de caja detallado y dashboard corregido
+
+## Cómo aplicar (en este orden)
+
+1. **Supabase → SQL Editor:** pega `pagos-mixtos.sql` y dale a **Run** (una sola vez).
+   Crea la tabla `venta_pagos` y permite el método `mixto`.
+2. **Código:** copia la carpeta `src` de este paquete encima de la de tu proyecto
+   (reemplaza los archivos). Otra opción, con Git: `git apply cambios-pagos-mixtos.patch`.
+3. `npm run build` y sube a GitHub. Vercel lo publica solo.
+
+> La variable `SUPABASE_SERVICE_ROLE_KEY` tiene que estar en Vercel (ya la usa la
+> pantalla de Usuarios). Con ella el servidor guarda cómo se pagó cada venta.
+
+## 1. Pagos mixtos y débito o crédito (nuevo)
+
+Al darle a **Cobrar** aparecen 5 métodos: Efectivo, Tarjeta, Transf., Fiado y **Mixto**.
+
+- **Tarjeta:** hay que elegir **Débito** o **Crédito** antes de confirmar.
+- **Mixto:** pones cuánto va en **tarjeta** (y eliges débito o crédito) y/o cuánto va
+  en **transferencia**. **El resto se cobra en efectivo** y el sistema lo calcula solo.
+  Si escribes cuánto efectivo te dieron, te dice el cambio. El botón "Poner el resto"
+  llena el monto que falta.
+  - Ejemplo: total RD$ 1,000 → tarjeta débito 600 → efectivo 400.
+- El ticket muestra el desglose ("Mixto: Efectivo 400 / Tarjeta débito 600").
+- El historial del POS, el detalle de la venta y la copia de la factura también lo muestran.
+- El fiado no entra en el pago mixto (la venta a fiado sigue siendo aparte).
+
+## 2. Cierre de caja: cuánto contar y cuánto se vendió (mejorado)
+
+La pantalla de Caja, la ventana de cierre y el ticket de cierre muestran ahora 3 bloques:
+
+**Efectivo en la gaveta (lo que debes contar)**
+Monto inicial + ventas en efectivo (incluida la parte en efectivo de los pagos mixtos)
++ abonos de fiado en efectivo − devoluciones en efectivo − gastos pagados en efectivo
+= **Efectivo esperado**. Pones lo contado y te dice sobrante o faltante.
+
+**Ventas del turno:** efectivo, tarjeta débito, tarjeta crédito, transferencia, fiado,
+**total vendido**, y si hubo devoluciones, la **venta neta**.
+
+**Para cuadrar con el banco / verifone:** total en tarjetas y en transferencias
+(lo que no está en la gaveta).
+
+## 3. Errores de cálculo corregidos
+
+| Dónde | Qué pasaba | Ahora |
+| --- | --- | --- |
+| Historial de caja y PDF de caja | La "Diferencia" era *monto final − monto inicial*: era casi lo vendido en efectivo, no el sobrante/faltante. | Diferencia = contado − efectivo esperado del turno. Se agregaron las columnas "Vendido" y "Efectivo esperado". |
+| Cierre de caja | No se tomaban en cuenta los abonos de fiado en efectivo, las devoluciones en efectivo ni los gastos en efectivo. Por eso salían sobrantes o faltantes que no eran reales. | Entran en el efectivo esperado. |
+| Dashboard: Ventas del mes, gráfico de 30 días, comparación anual, Contabilidad, Resumen ejecutivo | Supabase devuelve **máximo 1000 filas por consulta**. Con más de 1000 ventas en el período, el resto no se sumaba y los números salían **más bajos** de lo vendido. | Las ventas se traen por páginas: se suman todas. |
+| Dashboard: ventas del día, del mes y gráficos | Las devoluciones no se restaban: la venta se quedaba "completada" con su total completo, y el número salía **más alto** de lo vendido. | Se restan el día en que se hicieron (venta neta). La tarjeta indica las devoluciones. |
+| Comparación anual | Usaba el mes en hora UTC: las ventas del último día del mes después de las 8:00 p. m. caían en el mes siguiente. | Mes en hora de RD. |
+| Contabilidad: ventas por día | Mismo problema de hora UTC. | Día en hora de RD. |
+| Tarjeta "Ingresos del mes" | Incluía el fiado (aún no cobrado), así que no cuadraba con "Ingresos reales" de Contabilidad. | Se llama **"Ventas del mes"**, que es lo que mide. |
+
+La tarjeta **"Ventas del día"** del dashboard es igual a la **"Venta neta"** del cierre de
+caja (mismo turno) y muestra efectivo, tarjeta, transferencia y fiado.
+
+## Archivos
+
+Nuevos: `src/lib/pagos.ts`, `src/lib/caja/cuadre.ts`, `src/lib/ventas/movimientos.ts`, `pagos-mixtos.sql`.
+
+Modificados: ver `archivos-modificados.txt`.
+
+## Verificado
+- `tsc` sin errores nuevos. `next build` correcto.
+- `eslint`: los mismos 4 avisos que ya tenía el proyecto, ninguno nuevo.
+- Prueba del cuadre con un turno de ejemplo (efectivo, mixto, débito, crédito, transferencia,
+  fiado, devolución, abono y gasto): el efectivo esperado y los totales dan exacto.
+- No se probó contra tu base de datos real (no tengo acceso). Prueba primero una venta mixta
+  y un cierre de caja.
+
+## Ten en cuenta
+- Las ventas viejas con tarjeta no tienen tipo: salen como "Tarjeta (sin tipo)".
+- Si una venta se guarda pero falla el desglose (por ejemplo, si no ejecutaste el SQL),
+  aparece un aviso y esa venta se cuenta completa en su método principal.
+- Una venta hecha sin internet se registra con la hora en que se sincroniza. Si se
+  sincroniza después de cerrar la caja, cuenta en el turno siguiente (esto ya pasaba antes).
