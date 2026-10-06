@@ -50,10 +50,15 @@ Monto inicial + ventas en efectivo (incluida la parte en efectivo de los pagos m
 | Dashboard: ventas del día, del mes y gráficos | Las devoluciones no se restaban: la venta se quedaba "completada" con su total completo, y el número salía **más alto** de lo vendido. | Se restan el día en que se hicieron (venta neta). La tarjeta indica las devoluciones. |
 | Comparación anual | Usaba el mes en hora UTC: las ventas del último día del mes después de las 8:00 p. m. caían en el mes siguiente. | Mes en hora de RD. |
 | Contabilidad: ventas por día | Mismo problema de hora UTC. | Día en hora de RD. |
+| Gráfico del dashboard | Solo tenía "7 días" y "30 días": los 30 días mezclaban el mes pasado con el actual. | Ahora es "7 días" y **"Este mes"** (desde el día 1; si hoy es día 1, solo hoy), con el total del rango. |
+| Fecha "de hoy" en RD | Dependía del formato de fecha del servidor. | Se calcula directo con UTC−4, siempre YYYY-MM-DD. |
 | Tarjeta "Ingresos del mes" | Incluía el fiado (aún no cobrado), así que no cuadraba con "Ingresos reales" de Contabilidad. | Se llama **"Ventas del mes"**, que es lo que mide. |
 
 La tarjeta **"Ventas del día"** del dashboard es igual a la **"Venta neta"** del cierre de
 caja (mismo turno) y muestra efectivo, tarjeta, transferencia y fiado.
+
+La tarjeta **"Ventas del mes"** cuenta solo desde el día 1 del mes actual hasta hoy, y lo
+dice en la tarjeta ("del 1 oct. a hoy · N ventas"), junto con el fiado incluido y las devoluciones.
 
 ## Archivos
 

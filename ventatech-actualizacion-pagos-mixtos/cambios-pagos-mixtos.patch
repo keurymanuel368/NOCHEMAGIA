@@ -300,10 +300,35 @@ index 2d1f696..d8e46f5 100644
        ["Abonos cobrados", abonosTotal.toFixed(2)],
        ["Ingresos reales", ingresosReales.toFixed(2)],
 diff --git a/src/app/page.tsx b/src/app/page.tsx
-index 863859a..a41c07d 100644
+index 863859a..e2f7160 100644
 --- a/src/app/page.tsx
 +++ b/src/app/page.tsx
-@@ -58,13 +58,24 @@ export default async function Home() {
+@@ -27,13 +27,23 @@ function hora(iso: string) {
+   });
+ }
+ 
++/** "2026-10-01" → "1 oct." */
++function fechaCorta(fecha: string) {
++  return new Date(`${fecha}T12:00:00Z`).toLocaleDateString("es-DO", {
++    day: "numeric",
++    month: "short",
++    timeZone: "UTC",
++  });
++}
++
+ export default async function Home() {
+   const usuario = await getUsuarioActual();
+   if (!usuario) redirect("/login");
+ 
+   const [stats, ventasPorDia, ultimasVentas, stockBajo, comparativaAnual] = await Promise.all([
+     getDashboardStats(),
+-    getVentasUltimosDias(30),
++    // 31 días: alcanza para el mes completo y para "7 días".
++    getVentasUltimosDias(31),
+     getUltimasVentas(),
+     getStockBajo(),
+     getComparativaAnual(),
+@@ -58,15 +68,34 @@ export default async function Home() {
              accent="from-blue-400 to-blue-600"
              label="Ventas del día"
              value={formatMoney(stats.ventasHoyTotal)}
@@ -328,8 +353,28 @@ index 863859a..a41c07d 100644
 -            label="Ingresos del mes"
 +            label="Ventas del mes"
              value={formatMoney(stats.ingresosMesTotal)}
-             sub={`mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`}
+-            sub={`mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`}
++            sub={[
++              `del ${fechaCorta(stats.mesDesde)} a hoy`,
++              `${stats.ventasMesCount} ventas`,
++              ...(stats.ventasMesFiado > 0 ? [`incluye fiado ${formatMoney(stats.ventasMesFiado)}`] : []),
++              ...(stats.ventasMesDevoluciones > 0
++                ? [`devoluciones −${formatMoney(stats.ventasMesDevoluciones)}`]
++                : []),
++              `mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`,
++            ].join(" · ")}
              delta={{ pct: variacionMes, label: "vs. mes pasado" }}
+           />
+           <StatMini
+@@ -104,7 +133,7 @@ export default async function Home() {
+           bajos={stats.productosStockBajoNoAgotados}
+         />
+ 
+-        <SalesChart data={ventasPorDia} />
++        <SalesChart data={ventasPorDia} mesDesde={stats.mesDesde} />
+ 
+         <YearComparisonChart data={comparativaAnual} />
+ 
 diff --git a/src/components/caja/CajaClient.tsx b/src/components/caja/CajaClient.tsx
 index e3aabe9..68ad5b7 100644
 --- a/src/components/caja/CajaClient.tsx
@@ -499,6 +544,64 @@ index e3aabe9..68ad5b7 100644
                    cajero: cajaActual.cajero_nombre,
                    abiertaAt: cajaActual.abierta_at,
                  }
+diff --git a/src/components/dashboard/SalesChart.tsx b/src/components/dashboard/SalesChart.tsx
+index 3a49a28..646398e 100644
+--- a/src/components/dashboard/SalesChart.tsx
++++ b/src/components/dashboard/SalesChart.tsx
+@@ -41,13 +41,18 @@ function CustomTooltip({
+   );
+ }
+ 
+-export function SalesChart({ data }: { data: VentaDia[] }) {
+-  const [rango, setRango] = useState<"7" | "30">("7");
++type RangoGrafico = "7" | "mes";
+ 
+-  const chartData = useMemo(() => {
+-    const dias = rango === "7" ? 7 : 30;
+-    return data.slice(-dias);
+-  }, [data, rango]);
++export function SalesChart({ data, mesDesde }: { data: VentaDia[]; mesDesde: string }) {
++  const [rango, setRango] = useState<RangoGrafico>("mes");
++
++  // "Este mes" empieza el día 1 del mes actual (si hoy es día 1, solo hoy),
++  // no 30 días hacia atrás.
++  const chartData = useMemo(
++    () => (rango === "7" ? data.slice(-7) : data.filter((d) => d.fecha >= mesDesde)),
++    [data, rango, mesDesde]
++  );
++  const totalRango = chartData.reduce((s, d) => s + d.total, 0);
+ 
+   return (
+     <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#0b1220]">
+@@ -55,11 +60,17 @@ export function SalesChart({ data }: { data: VentaDia[] }) {
+         <div className="flex items-center gap-2">
+           <BarChart3 className="h-4.5 w-4.5 text-blue-500" />
+           <h2 className="text-sm font-semibold text-neutral-900 dark:text-white">
+-            Ventas — Últimos {rango} días
++            Ventas — {rango === "7" ? "Últimos 7 días" : "Este mes"}
+           </h2>
++          <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
++            · Total {formatMoney(totalRango)}
++          </span>
+         </div>
+         <div className="flex gap-1.5 rounded-lg bg-neutral-100 p-1 dark:bg-white/5">
+-          {(["7", "30"] as const).map((r) => (
++          {([
++            ["7", "7 días"],
++            ["mes", "Este mes"],
++          ] as const).map(([r, etiqueta]) => (
+             <button
+               key={r}
+               onClick={() => setRango(r)}
+@@ -69,7 +80,7 @@ export function SalesChart({ data }: { data: VentaDia[] }) {
+                   : "text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-white"
+               }`}
+             >
+-              {r} días
++              {etiqueta}
+             </button>
+           ))}
+         </div>
 diff --git a/src/components/dashboard/UltimasVentasTable.tsx b/src/components/dashboard/UltimasVentasTable.tsx
 index 624bf0e..a377957 100644
 --- a/src/components/dashboard/UltimasVentasTable.tsx
@@ -1808,7 +1911,7 @@ index ed9bfd8..7732b10 100644
    }
    const ventasPorDia = Array.from(porDiaMap.entries())
 diff --git a/src/lib/dashboard/queries.ts b/src/lib/dashboard/queries.ts
-index e2d22ba..a7acc63 100644
+index e2d22ba..3608591 100644
 --- a/src/lib/dashboard/queries.ts
 +++ b/src/lib/dashboard/queries.ts
 @@ -1,6 +1,8 @@
@@ -1820,7 +1923,7 @@ index e2d22ba..a7acc63 100644
  
  /** Turno de caja que define "el día" del dashboard. */
  export type TurnoCaja = {
-@@ -11,10 +13,18 @@ export type TurnoCaja = {
+@@ -11,11 +13,24 @@ export type TurnoCaja = {
  export type DashboardStats = {
    /** null si el negocio nunca ha abierto caja: entonces "hoy" es el día calendario. */
    turno: TurnoCaja | null;
@@ -1837,9 +1940,15 @@ index e2d22ba..a7acc63 100644
    ventasAyerTotal: number;
 +  /** Ventas netas del mes (facturado − devoluciones), todos los métodos. */
    ingresosMesTotal: number;
++  /** Para revisar el número del mes: desde cuándo, cuántas ventas, cuánto es fiado y devoluciones. */
++  mesDesde: string;
++  ventasMesCount: number;
++  ventasMesFiado: number;
++  ventasMesDevoluciones: number;
    ingresosMesAnteriorTotal: number;
    deudasPendientesTotal: number;
-@@ -92,66 +102,48 @@ async function getTurnos(supabase: SupabaseServer) {
+   clientesConDeuda: number;
+@@ -92,66 +107,48 @@ async function getTurnos(supabase: SupabaseServer) {
    return { actual, anterior };
  }
  
@@ -1933,7 +2042,7 @@ index e2d22ba..a7acc63 100644
    const deudaRows = clientes.data ?? [];
    const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
  
-@@ -163,18 +155,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+@@ -163,18 +160,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  
    return {
      turno,
@@ -1952,6 +2061,10 @@ index e2d22ba..a7acc63 100644
 -    ingresosMesAnteriorTotal,
 +    ventasAyerTotal: ayer.neto,
 +    ingresosMesTotal: mes.neto,
++    mesDesde: inicioMes(hoyRD()),
++    ventasMesCount: mes.ventas.length,
++    ventasMesFiado: centavos(mes.ventas.filter((v) => v.metodo_pago === "fiado").reduce((s, v) => s + v.total, 0)),
++    ventasMesDevoluciones: mes.devuelto,
 +    ingresosMesAnteriorTotal: mesAnterior.neto,
      deudasPendientesTotal,
      clientesConDeuda: deudaRows.length,
@@ -1963,7 +2076,7 @@ index e2d22ba..a7acc63 100644
      clientesAtendidosHoy,
    };
  }
-@@ -182,23 +179,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+@@ -182,23 +188,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  export async function getVentasUltimosDias(dias: number): Promise<VentaDia[]> {
    const supabase = await createClient();
    const desde = sumarDias(hoyRD(), -(dias - 1));
@@ -2005,7 +2118,7 @@ index e2d22ba..a7acc63 100644
  }
  
  export async function getUltimasVentas(limit = 8): Promise<UltimaVenta[]> {
-@@ -227,27 +233,25 @@ const MESES_CORTOS = [
+@@ -227,27 +242,25 @@ const MESES_CORTOS = [
  
  export async function getComparativaAnual(): Promise<MesComparativo[]> {
    const supabase = await createClient();
@@ -2047,6 +2160,35 @@ index e2d22ba..a7acc63 100644
    }));
  }
  
+diff --git a/src/lib/fecha-rd.ts b/src/lib/fecha-rd.ts
+index ec4f4c1..5073452 100644
+--- a/src/lib/fecha-rd.ts
++++ b/src/lib/fecha-rd.ts
+@@ -11,12 +11,7 @@
+ export const ZONA_NEGOCIO = "America/Santo_Domingo";
+ const OFFSET_NEGOCIO = "-04:00";
+ 
+-const formatoFecha = new Intl.DateTimeFormat("en-CA", {
+-  timeZone: ZONA_NEGOCIO,
+-  year: "numeric",
+-  month: "2-digit",
+-  day: "2-digit",
+-});
++const OFFSET_MS = 4 * 60 * 60 * 1000;
+ 
+ /** Día (YYYY-MM-DD) en hora de RD de un instante. */
+ export function fechaRD(instante: Date | string): string {
+@@ -25,7 +20,9 @@ export function fechaRD(instante: Date | string): string {
+     if (/^\d{4}-\d{2}-\d{2}$/.test(instante)) return instante;
+     instante = new Date(instante);
+   }
+-  return formatoFecha.format(instante);
++  // Se resta el desfase de RD y se lee la fecha en UTC: no depende del
++  // formato de fecha del servidor (Intl puede devolver "10/6/2026").
++  return new Date(instante.getTime() - OFFSET_MS).toISOString().slice(0, 10);
+ }
+ 
+ /** Hoy (YYYY-MM-DD) en hora de RD, sin importar la zona del servidor o del navegador. */
 diff --git a/src/lib/offline/db.ts b/src/lib/offline/db.ts
 index a8e73a4..b4cd394 100644
 --- a/src/lib/offline/db.ts

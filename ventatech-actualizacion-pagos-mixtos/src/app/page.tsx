@@ -27,13 +27,23 @@ function hora(iso: string) {
   });
 }
 
+/** "2026-10-01" → "1 oct." */
+function fechaCorta(fecha: string) {
+  return new Date(`${fecha}T12:00:00Z`).toLocaleDateString("es-DO", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+}
+
 export default async function Home() {
   const usuario = await getUsuarioActual();
   if (!usuario) redirect("/login");
 
   const [stats, ventasPorDia, ultimasVentas, stockBajo, comparativaAnual] = await Promise.all([
     getDashboardStats(),
-    getVentasUltimosDias(30),
+    // 31 días: alcanza para el mes completo y para "7 días".
+    getVentasUltimosDias(31),
     getUltimasVentas(),
     getStockBajo(),
     getComparativaAnual(),
@@ -77,7 +87,15 @@ export default async function Home() {
             accent="from-green-400 to-green-600"
             label="Ventas del mes"
             value={formatMoney(stats.ingresosMesTotal)}
-            sub={`mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`}
+            sub={[
+              `del ${fechaCorta(stats.mesDesde)} a hoy`,
+              `${stats.ventasMesCount} ventas`,
+              ...(stats.ventasMesFiado > 0 ? [`incluye fiado ${formatMoney(stats.ventasMesFiado)}`] : []),
+              ...(stats.ventasMesDevoluciones > 0
+                ? [`devoluciones −${formatMoney(stats.ventasMesDevoluciones)}`]
+                : []),
+              `mes pasado ${formatMoney(stats.ingresosMesAnteriorTotal)}`,
+            ].join(" · ")}
             delta={{ pct: variacionMes, label: "vs. mes pasado" }}
           />
           <StatMini
@@ -115,7 +133,7 @@ export default async function Home() {
           bajos={stats.productosStockBajoNoAgotados}
         />
 
-        <SalesChart data={ventasPorDia} />
+        <SalesChart data={ventasPorDia} mesDesde={stats.mesDesde} />
 
         <YearComparisonChart data={comparativaAnual} />
 

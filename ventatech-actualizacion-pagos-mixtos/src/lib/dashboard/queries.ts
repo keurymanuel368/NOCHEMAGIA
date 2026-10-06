@@ -26,6 +26,11 @@ export type DashboardStats = {
   ventasAyerTotal: number;
   /** Ventas netas del mes (facturado − devoluciones), todos los métodos. */
   ingresosMesTotal: number;
+  /** Para revisar el número del mes: desde cuándo, cuántas ventas, cuánto es fiado y devoluciones. */
+  mesDesde: string;
+  ventasMesCount: number;
+  ventasMesFiado: number;
+  ventasMesDevoluciones: number;
   ingresosMesAnteriorTotal: number;
   deudasPendientesTotal: number;
   clientesConDeuda: number;
@@ -165,6 +170,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     ventasHoyCount,
     ventasAyerTotal: ayer.neto,
     ingresosMesTotal: mes.neto,
+    mesDesde: inicioMes(hoyRD()),
+    ventasMesCount: mes.ventas.length,
+    ventasMesFiado: centavos(mes.ventas.filter((v) => v.metodo_pago === "fiado").reduce((s, v) => s + v.total, 0)),
+    ventasMesDevoluciones: mes.devuelto,
     ingresosMesAnteriorTotal: mesAnterior.neto,
     deudasPendientesTotal,
     clientesConDeuda: deudaRows.length,
