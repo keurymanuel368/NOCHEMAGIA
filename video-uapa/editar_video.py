@@ -480,8 +480,12 @@ def render_seccion(k, sec, total_prog, prog_ini):
         "acompressor=threshold=-20dB:ratio=3:attack=5:release=120,"
         "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,"
         f"afade=t=in:d=0.08,afade=t=out:st={dur_clip - 0.12:.3f}:d=0.12,"
-        f"adelay={int(PAD * 1000)}:all=1,apad=whole_dur={D:.3f},"
-        "aformat=sample_fmts=fltp:channel_layouts=stereo[aout]")
+        "aformat=sample_rates=48000:sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[voz]")
+    # Silencio real delante de la voz, igual a la pausa de imagen (tpad) del
+    # video. Con adelay el silencio no se aplicaba y la voz iba ~0.6 s
+    # adelantada respecto a la boca.
+    fc.append(f"anullsrc=r=48000:cl=stereo:d={PAD},aformat=sample_fmts=fltp[sil]")
+    fc.append(f"[sil][voz]concat=n=2:v=0:a=1,apad=whole_dur={D:.3f}[aout]")
 
     out = ruta(f"sec_{k}.mp4")
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{sec['ss']:.3f}", "-to", f"{sec['to']:.3f}", "-i", src,
@@ -627,24 +631,50 @@ def main():
     # --- Unir todo con transiciones (video: fundido / deslizamiento; audio: crossfade)
     tipos = ["fade", "smoothleft", "fade", "smoothleft", "fade", "smoothleft", "fade",
              "smoothleft", "fade", "smoothleft", "fadeblack"]
-    cmd = ["ffmpeg", "-v", "error", "-y"]
-    for a in archivos:
-        cmd += ["-i", a]
-    fc, va, aa, acum = [], "0:v", "0:a", partes_dur[0]
+    # 1) Video: transiciones con xfade (solo video).
+    fc, va, acum = [], "0:v", partes_dur[0]
     for i in range(1, len(archivos)):
         off = acum - XF
         tipo = tipos[(i - 1) % len(tipos)]
         fc.append(f"[{va}][{i}:v]xfade=transition={tipo}:duration={XF}:offset={off:.3f}[xv{i}]")
-        fc.append(f"[{aa}][{i}:a]acrossfade=d={XF}:c1=tri:c2=tri[xa{i}]")
-        va, aa = f"xv{i}", f"xa{i}"
+        va = f"xv{i}"
         acum = off + partes_dur[i]
     fc.append(f"[{va}]fade=t=in:d=0.6,fade=t=out:st={acum - 0.8:.3f}:d=0.8[vfin]")
-    fc.append(f"[{aa}]afade=t=in:d=0.4,afade=t=out:st={acum - 0.8:.3f}:d=0.8[afin]")
-    script = ruta("final.filtro")
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    for arch in archivos:
+        cmd += ["-an", "-i", arch]
+    script = ruta("final_video.filtro")
     open(script, "w").write(";\n".join(fc))
-    cmd += ["-filter_complex_script", script, "-map", "[vfin]", "-map", "[afin]"]
-    cmd += codificar_video() + codificar_audio() + ["-movflags", "+faststart", SALIDA]
-    run(cmd)
+    video_mudo = ruta("final_video.mp4")
+    run(cmd + ["-filter_complex_script", script, "-map", "[vfin]"] + codificar_video() + [video_mudo])
+
+    # 2) Audio: cada parte se coloca exactamente donde empieza su video en la
+    #    línea de tiempo (los mismos inicios que usa xfade) y se mezclan con
+    #    fundidos cortos. Encadenar acrossfade adelantaba el audio ~0.3 s en
+    #    cada unión, y la voz terminaba sin coincidir con la boca.
+    fc, etiquetas = [], []
+    for i in range(len(archivos)):
+        filtros = []
+        if i > 0:
+            filtros.append(f"afade=t=in:d={XF}")
+        if i < len(archivos) - 1:
+            filtros.append(f"afade=t=out:st={partes_dur[i] - XF:.3f}:d={XF}")
+        filtros.append(f"adelay={round(inicios[i] * 1000)}:all=1")
+        fc.append(f"[{i}:a]aresample=48000,{','.join(filtros)}[pa{i}]")
+        etiquetas.append(f"[pa{i}]")
+    fc.append(f"{''.join(etiquetas)}amix=inputs={len(archivos)}:normalize=0:dropout_transition=0,"
+              f"atrim=0:{acum:.3f},afade=t=in:d=0.4,afade=t=out:st={acum - 0.8:.3f}:d=0.8[afin]")
+    cmd = ["ffmpeg", "-v", "error", "-y"]
+    for arch in archivos:
+        cmd += ["-vn", "-i", arch]
+    script = ruta("final_audio.filtro")
+    open(script, "w").write(";\n".join(fc))
+    audio = ruta("final_audio.wav")
+    run(cmd + ["-filter_complex_script", script, "-map", "[afin]", "-c:a", "pcm_s16le", audio])
+
+    # 3) Unir video y audio sin volver a codificar el video.
+    run(["ffmpeg", "-v", "error", "-y", "-i", video_mudo, "-i", audio, "-map", "0:v", "-map", "1:a",
+         "-c:v", "copy"] + codificar_audio() + ["-shortest", "-movflags", "+faststart", SALIDA])
     print("TOTAL", round(acum, 2), "s")
 
 
