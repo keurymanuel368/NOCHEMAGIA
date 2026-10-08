@@ -384,7 +384,7 @@ const $ = (s, r = document) => typeof s === 'string' ? r.querySelector(s) : s;
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const EV = []; let T0 = 0; window.__EV = EV;
-const fx = type => EV.push({t:+((performance.now() - T0)/1000).toFixed(3), type});
+const sfx = type => EV.push({t:+((performance.now() - T0)/1000).toFixed(3), type});
 const EASE = 'cubic-bezier(.32,.72,0,1)';
 function spring(k, d){
   let x = 0, v = 0, t = 0, still = 0; const dt = 1/240, pts = [0];
@@ -565,7 +565,7 @@ async function go(name, how = 'push', params = {}){
   const el = document.createElement('div'); el.innerHTML = SCREENS[name](params); const scr = el.firstElementChild; scr.dataset.name = name;
   app.appendChild(scr);
   const old = cur; cur = scr;
-  if (old && how !== 'none') fx('whoosh');
+  if (old && how !== 'none') sfx('whoosh');
   const jobs = [];
   if (!old || how === 'none') {}
   else if (how === 'push') { jobs.push(done(A(scr,[{transform:'translateX(100%)'},{transform:'none'}],'push')), done(A(old,[{transform:'none',filter:'brightness(1)'},{transform:'translateX(-30%)',filter:'brightness(.9)'}],'push'))); }
@@ -613,7 +613,7 @@ function ripple(){ const r = document.createElement('div'); r.className = 'rippl
 async function tap(el, {dur = 620, hold = 120} = {}){
   el = $(el, app);
   await moveTo(el, dur);
-  finger.classList.add('down'); el.classList.add('pressed'); ripple(); fx('click');
+  finger.classList.add('down'); el.classList.add('pressed'); ripple(); sfx('click');
   await sleep(hold);
   finger.classList.remove('down'); el.classList.remove('pressed');
   await sleep(90);
@@ -646,7 +646,7 @@ async function typeIn(id, text, {secret = false, speed = 85, onType} = {}){
     const keyName = /[0-9]/.test(ch) ? '123' : ch === ch.toUpperCase() && /[A-ZÁÉÍÓÚ]/.test(ch) ? '⇧' : ch.toLowerCase();
     const k = $(`.kb .k[data-k="${CSS.escape(keyName.normalize('NFD').replace(/[̀-ͯ]/g,'') || keyName)}"]`, cur);
     if (k) { k.classList.add('hit'); setTimeout(() => k.classList.remove('hit'), 110); }
-    onType?.(s); fx('key');
+    onType?.(s); sfx('key');
     await sleep(speed + (s.length % 3) * 22);
   }
   await sleep(200);
@@ -655,7 +655,7 @@ async function typeIn(id, text, {secret = false, speed = 85, onType} = {}){
 
 /* ---------- effects ---------- */
 function confetti(container, n = 70){
-  fx('success');
+  sfx('success');
   const cols = ['#DD7357','#EC9C82','#C9A66E','#A27D47','#FFFBF5','#8FBDB5'];
   const W = container.clientWidth, H = container.clientHeight;
   for (let i = 0; i < n; i++) {
@@ -667,7 +667,7 @@ function confetti(container, n = 70){
   }
 }
 function heartBurst(el){
-  fx('pop');
+  sfx('pop');
   const r = el.getBoundingClientRect(), ar = app.getBoundingClientRect(), s = 1.5;
   const cx = (r.left - ar.left + r.width/2)/s, cy = (r.top - ar.top + r.height/2)/s;
   for (let i = 0; i < 10; i++) { const d = document.createElement('i'); d.className = 'burst'; d.style.left = cx - 3 + 'px'; d.style.top = cy - 3 + 'px'; if (i % 2) d.style.background = '#C9A66E'; app.appendChild(d);
@@ -677,14 +677,14 @@ function heartBurst(el){
 async function flyToCart(src, target){
   const sr = src.getBoundingClientRect(), tr = target.getBoundingClientRect();
   const c = src.cloneNode(true); Object.assign(c.style, {position:'absolute', left:0, top:0, width:sr.width + 'px', height:sr.height + 'px', zIndex:25, transformOrigin:'50% 50%', pointerEvents:'none', filter:'drop-shadow(0 20px 18px rgba(90,50,30,.35))'});
-  stage.appendChild(c); fx('swoosh');
+  stage.appendChild(c); sfx('swoosh');
   const a = {x:sr.left + sr.width/2, y:sr.top + sr.height/2}, b = {x:tr.left + tr.width/2, y:tr.top + tr.height/2}, k = {x:(a.x + b.x)/2 - 120, y:Math.min(a.y, b.y) - 260};
   const kf = [], N = 40, endS = 50 / sr.width;
   for (let i = 0; i <= N; i++) { const u = i/N, t = u < .5 ? 4*u*u*u : 1 - Math.pow(-2*u + 2, 3)/2;
     const x = (1-t)**2*a.x + 2*(1-t)*t*k.x + t*t*b.x, y = (1-t)**2*a.y + 2*(1-t)*t*k.y + t*t*b.y;
     const sc = u < .15 ? 1 + .12*(u/.15) : 1.12 - (1.12 - endS)*Math.pow((u - .15)/.85, .8);
     kf.push({offset:u, opacity:u > .9 ? 1 - (u - .9)*10 : 1, transform:`translate(${x - sr.width/2}px,${y - sr.height/2}px) scale(${sc}) rotate(${-24*t}deg)`}); }
-  await c.animate(kf, {duration:900, easing:'linear', fill:'forwards'}).finished; c.remove(); fx('ding');
+  await c.animate(kf, {duration:900, easing:'linear', fill:'forwards'}).finished; c.remove(); sfx('ding');
   target.animate([{transform:'none'},{transform:'scale(1.3) rotate(-12deg)',offset:.25},{transform:'scale(.92) rotate(8deg)',offset:.5},{transform:'none'}], {duration:620, easing:'ease-out'});
   ripple2(b.x, b.y);
 }
@@ -693,7 +693,7 @@ function ripple2(x, y){ const r = document.createElement('div'); r.className = '
 function setBadges(){ const n = cartN(); $$('.badge', app).forEach(b => { b.dataset.n = n; b.innerHTML = `<span>${n}</span>`; b.firstChild.animate([{transform:'translateY(120%)'},{transform:'none'}], {duration:420, easing:EASE}); }); }
 async function island(p, vi, q){
   const isl = $('#island'), inn = $('#islIn');
-  fx('notify');
+  sfx('notify');
   inn.innerHTML = `<span class="th">${glasses(p.shape, p.v[vi], false)}</span><span class="tx"><b>Añadido al carrito</b><span>${p.name} · ${p.v[vi].n}${q > 1 ? ' · ×' + q : ''}</span></span><span class="go">Ver</span>`;
   await done(A(isl, [{width:'120px',height:'35px',marginLeft:'-60px',borderRadius:'20px'},{width:'540px',height:'92px',marginLeft:'-270px',borderRadius:'46px'}], 'fly'));
   A(inn, [{opacity:0,transform:'scale(.9)',filter:'blur(6px)'},{opacity:1,transform:'none',filter:'blur(0)'}], {duration:380, easing:EASE});
@@ -714,7 +714,7 @@ async function intro(){
   A(sun, [{opacity:0,transform:'translateY(240px) scale(.7)'},{opacity:.22,transform:'translateY(0) scale(1)'}], {duration:2600, easing:'cubic-bezier(.2,.8,.2,1)'});
   A(hl, [{opacity:0,transform:'scaleX(0)'},{opacity:.5,transform:'scaleX(1)'}], {duration:1600, delay:300, easing:EASE});
   A(mark, [{transform:'scale(.6)',opacity:0},{transform:'scale(1)',opacity:1}], {...SP.soft, delay:200});
-  await sleep(300); fx('shimmer');
+  await sleep(300); sfx('shimmer');
   A($('.lm-c', mark), [{opacity:0,transform:'translateX(-40px)'},{opacity:1,transform:'none'}], {duration:900, easing:EASE});
   A($('.lm-s', mark), [{opacity:0,transform:'translateX(40px)'},{opacity:1,transform:'none'}], {duration:900, delay:150, easing:EASE});
   paths.forEach((p, i) => p.animate([{strokeDashoffset:p.style.strokeDasharray},{strokeDashoffset:0}], {duration:900, delay:500 + i*80, easing:'cubic-bezier(.6,0,.2,1)', fill:'both'}));
@@ -727,20 +727,20 @@ async function intro(){
   $$('i', ew).forEach(i => A(i, [{transform:'scaleX(0)'},{transform:'scaleX(1)'}], {duration:1100, delay:200, easing:EASE}));
   await sleep(1000);
   A(tag, [{opacity:0,transform:'translateY(30px)',filter:'blur(8px)'},{opacity:1,transform:'none',filter:'blur(0)'}], {duration:1000, easing:EASE});
-  await sleep(200); fx('riser');
+  await sleep(200); sfx('riser');
   await sleep(1800);
   // transition: hero lifts away, phone rises
   const hero = $('#intro');
   A(hero, [{opacity:1,transform:'none'},{opacity:0,transform:'translateY(-120px) scale(.92)'}], {duration:800, easing:'cubic-bezier(.6,0,.4,1)'});
   phoneWrap.style.visibility = 'visible';
   await go('splash', 'none');
-  A(phoneWrap, [{transform:'translateY(1500px) rotate(8deg)'},{transform:'none'}], 'bounce'); fx('drop'); fx('whoosh');
+  A(phoneWrap, [{transform:'translateY(1500px) rotate(8deg)'},{transform:'none'}], 'bounce'); sfx('drop'); sfx('whoosh');
   await sleep(500);
   A($('#prog'), [{opacity:0},{opacity:1}], {duration:600});
   await sleep(700);
 }
 async function outro(){
-  fx('outro');
+  sfx('outro');
   await fingerShow(false);
   A(capEl, [{opacity:1},{opacity:0,transform:'translateY(-30px)'}], {duration:500});
   A($('#prog'), [{opacity:1},{opacity:0}], {duration:400});
@@ -771,7 +771,7 @@ async function runFilm(){
   for (let k = 1; k <= 2; k++) {
     drag($('.arch', cur.querySelectorAll('.slide')[k-1]), -300, 0, 520);
     await sleep(160);
-    fx('whoosh');
+    sfx('whoosh');
     await done(A(track, [{transform:`translateX(${-(k-1)*33.333}%)`},{transform:`translateX(${-k*33.333}%)`}], 'push'));
     track.style.transform = `translateX(${-k*33.333}%)`; track.getAnimations().forEach(a => a.cancel());
     dots.forEach((d, i) => d.classList.toggle('on', i === k));
@@ -849,7 +849,7 @@ async function runFilm(){
   for (const k of [1, 2]) {
     drag($('.hero2', cur), -280, 0, 480);
     await sleep(150);
-    fx('whoosh');
+    sfx('whoosh');
     await done(A(ptrack, [{transform:`translateX(${-vi*100}%)`},{transform:`translateX(${-k*100}%)`}], 'push'));
     ptrack.style.transform = `translateX(${-k*100}%)`; ptrack.getAnimations().forEach(a => a.cancel()); vi = k;
     swatches.forEach((s, i) => s.classList.toggle('on', i === k)); pdots.forEach((s, i) => s.classList.toggle('on', i === k));
@@ -879,7 +879,7 @@ async function runFilm(){
   S.cart.push({id:'coral', v:0, q:2});
   await flyToCart($('.pslide svg', cur), $('.float .cartbtn', cur));
   setBadges();
-  ab.classList.add('ok'); ab.innerHTML = I.check; fx('pop');
+  ab.classList.add('ok'); ab.innerHTML = I.check; sfx('pop');
   island(prd, 0, 2);
   await sleep(1300);
   ab.getAnimations().forEach(a => a.cancel()); ab.style.flex = ''; ab.style.marginLeft = ''; ab.innerHTML = `${I.check} Agregado`;
@@ -912,7 +912,7 @@ async function runFilm(){
   await kbShow(false);
   const ap = await tap('#apBtn'); ap.innerHTML = '<span class="spin"></span>';
   await sleep(700);
-  ap.classList.add('ok'); fx('pop'); ap.innerHTML = I.check.replace('class="ic ', 'class="ic " style="width:20px;height:20px;stroke:#fff" ');
+  ap.classList.add('ok'); sfx('pop'); ap.innerHTML = I.check.replace('class="ic ', 'class="ic " style="width:20px;height:20px;stroke:#fff" ');
   const sumEl = $('#sum', cur), t0 = sub(), t1 = Math.round(t0*.9);
   const dl = document.createElement('div'); dl.className = 'r disc'; dl.innerHTML = `<span>Cupón CORAL10 (−10%)</span><span>−${fmt(t0 - t1)}</span>`;
   sumEl.insertBefore(dl, sumEl.lastElementChild);
