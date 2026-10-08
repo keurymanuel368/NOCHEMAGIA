@@ -1,0 +1,436 @@
+<title>Plan LensPro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: one readable column (max 1080px) that tells the plan as a story: what we build, how it works, what we need, when, how much. */
+:root{
+  --bg:#F5F7FA; --surface:#FFFFFF; --ink:#14161C; --ink-2:#4A5163; --ink-3:#8A91A3; --line:#E4E7EB;
+  --blue:#3454D1; --blue-2:#7C9CFF; --blue-soft:#EEF2FF; --on-blue:#FFFFFF;
+  --warn:#C2410C; --warn-soft:#FFF1E8; --good:#15803D; --good-soft:#E8F6EC; --track:#E9ECF2;
+  --shadow:0 1px 2px rgba(20,22,28,.04),0 8px 24px rgba(52,84,209,.07);
+  --f-display:"Sora","Inter",system-ui,sans-serif; --f-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif; --f-mono:"JetBrains Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0D0F14; --surface:#161922; --ink:#F1F3F8; --ink-2:#B4BACA; --ink-3:#757D92; --line:#262B37;
+  --blue:#6E89FF; --blue-2:#9EB2FF; --blue-soft:#1A2042; --on-blue:#0D0F14;
+  --warn:#FB923C; --warn-soft:#2A1A10; --good:#4ADE80; --good-soft:#10261A; --track:#222734;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0D0F14; --surface:#161922; --ink:#F1F3F8; --ink-2:#B4BACA; --ink-3:#757D92; --line:#262B37;
+  --blue:#6E89FF; --blue-2:#9EB2FF; --blue-soft:#1A2042; --on-blue:#0D0F14;
+  --warn:#FB923C; --warn-soft:#2A1A10; --good:#4ADE80; --good-soft:#10261A; --track:#222734;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding-inline:20px;padding-block:28px 72px;display:flex;flex-direction:column;gap:72px}
+h1,h2,h3{font-family:var(--f-display);letter-spacing:-.02em;margin:0;text-wrap:balance}
+h2{font-size:clamp(26px,3.4vw,34px);line-height:1.15}
+h3{font-size:17px;line-height:1.3}
+p{margin:0}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--blue)}
+.lead{color:var(--ink-2);max-width:62ch;font-size:17px}
+.sec{display:flex;flex-direction:column;gap:24px}
+.sec-head{display:flex;flex-direction:column;gap:10px}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:8px}
+svg.i{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* ---------- hero ---------- */
+.hero{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:40px;align-items:center;padding-top:12px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--f-display);font-weight:700;font-size:14px;color:var(--ink-2)}
+.brand b{width:28px;height:28px;border-radius:8px;background:var(--blue);color:var(--on-blue);display:grid;place-items:center;font-size:15px}
+.hero h1{font-size:clamp(34px,5.4vw,56px);line-height:1.04;margin-top:18px}
+.hero h1 em{font-style:normal;color:var(--blue)}
+.hero .lead{margin-top:16px}
+.facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:28px}
+.fact{background:var(--surface);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
+.fact b{display:block;font-family:var(--f-display);font-size:26px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.fact span{font-size:13px;color:var(--ink-2)}
+.count{background:var(--blue);color:var(--on-blue);border-radius:28px;padding:32px;display:flex;flex-direction:column;gap:8px;position:relative;overflow:hidden;min-height:300px;justify-content:flex-end}
+.count .big{font-family:var(--f-display);font-weight:800;font-size:clamp(84px,12vw,128px);line-height:.9;letter-spacing:-.05em;font-variant-numeric:tabular-nums}
+.count .lbl{font-size:17px;font-weight:600}
+.count .sub{font-size:14px;opacity:.8}
+.count svg.lens{position:absolute;right:-30px;top:18px;width:300px;opacity:.22}
+
+/* ---------- how it works ---------- */
+.flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;position:relative}
+.node{background:var(--surface);border-radius:20px;padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px;border:1.5px solid transparent;transition:border-color .25s,transform .25s;text-align:left}
+.node:hover{transform:translateY(-2px)}
+.node.on{border-color:var(--blue)}
+.node .ic{width:48px;height:48px;border-radius:14px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center}
+.node .tech{font-family:var(--f-mono);font-size:11.5px;color:var(--ink-3);letter-spacing:.01em}
+.node p{color:var(--ink-2);font-size:14.5px}
+.node.core{background:var(--blue);color:var(--on-blue)}
+.node.core .ic{background:rgba(255,255,255,.18);color:var(--on-blue)}
+.node.core p,.node.core .tech{color:var(--on-blue);opacity:.85}
+.node.out{background:transparent;box-shadow:none;border:1.5px dashed var(--line)}
+.rowlabel{grid-column:1/-1;display:flex;align-items:center;gap:12px;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin-top:8px}
+.rowlabel::after{content:"";flex:1;height:1px;background:var(--line)}
+.arrowrow{grid-column:1/-1;display:flex;justify-content:center;color:var(--blue-2);margin-block:-6px}
+.arrowrow svg{width:28px;height:28px}
+.pulse{animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{transform:translateY(5px);opacity:.55}}
+
+/* ---------- purchase journey ---------- */
+.journey{background:var(--surface);border-radius:24px;box-shadow:var(--shadow);padding:28px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:32px;align-items:center}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;position:relative}
+.steps li button{display:flex;gap:14px;align-items:center;width:100%;padding:10px 12px;border-radius:14px;text-align:left;transition:background .25s}
+.steps li button:hover{background:var(--bg)}
+.steps .n{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:14px;background:var(--track);color:var(--ink-2);flex:none;transition:all .3s;font-variant-numeric:tabular-nums}
+.steps .t{font-weight:600;font-size:15px}
+.steps li.done .n{background:var(--blue-soft);color:var(--blue)}
+.steps li.on button{background:var(--blue-soft)}
+.steps li.on .n{background:var(--blue);color:var(--on-blue)}
+.stage{background:var(--bg);border-radius:20px;padding:28px;min-height:300px;display:flex;flex-direction:column;gap:14px;justify-content:center}
+.stage .ic{width:64px;height:64px;border-radius:18px;background:var(--blue);color:var(--on-blue);display:grid;place-items:center}
+.stage .ic svg{width:32px;height:32px}
+.stage h3{font-size:22px}
+.stage p{color:var(--ink-2)}
+.stage .who{display:inline-flex;align-self:flex-start;gap:6px;align-items:center;font-size:12.5px;font-weight:600;padding:5px 10px;border-radius:999px;background:var(--surface);color:var(--ink-2)}
+.stage.anim{animation:swap .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes swap{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.ctrls{display:flex;gap:8px;margin-top:4px}
+.btn{height:40px;padding:0 16px;border-radius:12px;font-weight:600;font-size:14px;display:inline-flex;align-items:center;gap:8px;background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--line)}
+.btn.primary{background:var(--blue);color:var(--on-blue);box-shadow:none}
+.btn svg{width:18px;height:18px}
+
+/* ---------- checklist ---------- */
+.check-top{display:flex;gap:24px;align-items:center;flex-wrap:wrap;background:var(--surface);border-radius:20px;padding:20px 24px;box-shadow:var(--shadow)}
+.ring{width:84px;height:84px;flex:none;position:relative}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring b{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--f-display);font-size:20px;font-variant-numeric:tabular-nums}
+.check-top .txt{flex:1;min-width:220px}
+.check-top .txt strong{font-family:var(--f-display);font-size:18px;display:block}
+.check-top .txt span{color:var(--ink-2);font-size:14.5px}
+.groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.group{background:var(--surface);border-radius:20px;padding:20px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:6px}
+.group h3{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.group h3 .ic{width:36px;height:36px;border-radius:10px;background:var(--blue-soft);color:var(--blue);display:grid;place-items:center}
+.group h3 .ic svg{width:20px;height:20px}
+.item{display:flex;gap:12px;align-items:flex-start;padding:10px;border-radius:12px;cursor:pointer;transition:background .2s}
+.item:hover{background:var(--bg)}
+.item input{appearance:none;-webkit-appearance:none;width:22px;height:22px;border-radius:7px;border:2px solid var(--ink-3);flex:none;margin:1px 0 0;display:grid;place-items:center;cursor:pointer;transition:all .2s}
+.item input:checked{background:var(--good);border-color:var(--good)}
+.item input:checked::after{content:"";width:10px;height:5px;border:2.5px solid var(--surface);border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.item .w{flex:1;min-width:0}
+.item .w b{font-weight:600;font-size:15px;display:block}
+.item .w span{font-size:13.5px;color:var(--ink-2)}
+.item.is-done .w b{color:var(--ink-3);text-decoration:line-through}
+.tag{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-radius:6px;background:var(--warn-soft);color:var(--warn);flex:none;margin-top:2px}
+.item.is-done .tag{background:var(--good-soft);color:var(--good)}
+
+/* ---------- timeline ---------- */
+.tl{background:var(--surface);border-radius:24px;box-shadow:var(--shadow);padding:24px;overflow-x:auto}
+.tl-in{min-width:640px;position:relative}
+.tl-weeks{display:grid;grid-template-columns:180px 1fr;font-size:12px;color:var(--ink-3);font-weight:600;margin-bottom:8px}
+.tl-weeks .scale{position:relative;height:18px}
+.tl-weeks .scale span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.tl-row{display:grid;grid-template-columns:180px 1fr;align-items:center;min-height:44px}
+.tl-row .name{font-weight:600;font-size:14px;padding-right:12px}
+.tl-row .name small{display:block;font-weight:400;color:var(--ink-3);font-size:12px}
+.tl-row .lane{position:relative;height:44px;border-top:1px solid var(--line)}
+.bar{position:absolute;top:10px;height:24px;border-radius:12px;background:var(--blue-soft);border:1.5px solid var(--blue-2);transform-origin:left;animation:grow .9s cubic-bezier(.2,.8,.2,1) both}
+.bar.main{background:var(--blue);border-color:var(--blue)}
+.bar.warn{background:var(--warn-soft);border-color:var(--warn)}
+.bar.side{background:repeating-linear-gradient(135deg,var(--blue-soft) 0 6px,transparent 6px 12px);border-style:dashed}
+@keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.diamond{position:absolute;top:12px;width:20px;height:20px;background:var(--blue);transform:translateX(-50%) rotate(45deg);border-radius:4px}
+.today{position:absolute;top:-26px;bottom:0;width:0;border-left:2px dashed var(--warn);pointer-events:none}
+.today span{position:absolute;top:0;left:6px;font-size:11px;font-weight:700;color:var(--warn);white-space:nowrap;text-transform:uppercase;letter-spacing:.06em}
+
+/* ---------- costs ---------- */
+.costs{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:16px;align-items:stretch}
+.bigcost{background:var(--ink);color:var(--bg);border-radius:24px;padding:28px;display:flex;flex-direction:column;justify-content:space-between;gap:20px}
+.bigcost .v{font-family:var(--f-display);font-weight:800;font-size:72px;letter-spacing:-.04em;line-height:1}
+.bigcost .v small{font-size:20px;font-weight:600;letter-spacing:0}
+.bigcost p{opacity:.75;font-size:14.5px}
+.clist{background:var(--surface);border-radius:24px;box-shadow:var(--shadow);padding:8px 24px}
+.crow{display:flex;justify-content:space-between;gap:16px;padding:14px 0;align-items:center}
+.crow+.crow{border-top:1px solid var(--line)}
+.crow b{font-weight:600;font-size:15px}
+.crow span{display:block;font-size:13px;color:var(--ink-2)}
+.crow .p{font-family:var(--f-mono);font-size:13.5px;font-weight:500;white-space:nowrap;color:var(--ink);text-align:right}
+.crow .p.free{color:var(--good)}
+
+/* ---------- now ---------- */
+.now{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.do{background:var(--surface);border-radius:20px;padding:22px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:10px;border-top:4px solid var(--blue)}
+.do .when{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--blue)}
+.do p{color:var(--ink-2);font-size:14.5px}
+.do:first-child{border-top-color:var(--warn)}
+.do:first-child .when{color:var(--warn)}
+.foot{color:var(--ink-3);font-size:13px;text-align:center}
+.foot a{color:var(--blue)}
+
+@media (max-width:820px){
+  .hero,.journey,.costs{grid-template-columns:1fr}
+  .flow{grid-template-columns:1fr 1fr}
+  .groups,.now{grid-template-columns:1fr}
+  .count{min-height:220px}
+}
+@media (max-width:520px){
+  .flow{grid-template-columns:1fr}
+  .facts{grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .fact{padding:12px}
+  .fact b{font-size:20px}
+  .journey{padding:16px}
+  .stage{padding:20px;min-height:240px}
+  .bigcost .v{font-size:56px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<main class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div>
+      <div class="brand"><b>D</b>DEXA Technologies · Proyecto LensPro</div>
+      <h1>Así vamos a construir la <em>tienda en línea</em> de LensPro</h1>
+      <p class="lead">Una tienda de lentes donde la gente elige, paga y recibe en su casa. Aquí está todo el plan explicado sin palabras técnicas: cómo funciona, qué necesitamos de la empresa, cuándo sale y cuánto cuesta.</p>
+      <div class="facts">
+        <div class="fact"><b>7</b><span>semanas de trabajo</span></div>
+        <div class="fact"><b>19</b><span>cosas que pedir</span></div>
+        <div class="fact"><b>≈US$5</b><span>al mes para operar</span></div>
+      </div>
+    </div>
+    <div class="count" aria-label="Días para el lanzamiento">
+      <svg class="lens" viewBox="0 0 200 84" aria-hidden="true"><path d="M16 24Q15 17 24 17L86 15Q95 15 94 24L90 50Q87 62 74 62L36 62Q23 62 20 50Z M184 24Q185 17 176 17L114 15Q105 15 106 24L110 50Q113 62 126 62L164 62Q177 62 180 50Z M94 26Q100 20 106 26" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round"/></svg>
+      <span class="lbl">faltan</span>
+      <span class="big" id="days">54</span>
+      <span class="lbl">días para salir en vivo</span>
+      <span class="sub">Lanzamiento: martes 1 de diciembre de 2026, justo para las ventas de Navidad.</span>
+    </div>
+  </header>
+
+  <!-- HOW IT WORKS -->
+  <section class="sec" id="como">
+    <div class="sec-head">
+      <span class="eyebrow">Cómo funciona</span>
+      <h2>Piénsalo como una tienda física, pero en internet</h2>
+      <p class="lead">Cada pieza tiene un trabajo, igual que en una tienda de verdad. Toca una tarjeta para ver qué hace.</p>
+    </div>
+    <div class="flow" id="flow">
+      <div class="rowlabel">Lo que la gente ve</div>
+      <button class="node" data-k="vitrina"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span><h3>La vitrina</h3><span class="tech">Frontend · Astro + React</span><p>Las páginas donde el cliente mira los lentes, los agrega al carrito y paga. Funciona en celular y computadora.</p></button>
+      <button class="node" data-k="oficina"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><h3>La oficina</h3><span class="tech">Panel de administración</span><p>Donde el personal de LensPro sube productos, ve los pedidos nuevos y revisa cuánto se vendió.</p></button>
+      <button class="node" data-k="seguridad"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg></span><h3>El guardia</h3><span class="tech">Cloudflare · WAF + Turnstile</span><p>Bloquea robots y ataques antes de que lleguen a la tienda, y hace que todo cargue rápido.</p></button>
+      <div class="arrowrow"><svg class="i pulse" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></div>
+      <div class="rowlabel">Lo que trabaja por detrás</div>
+      <button class="node core" data-k="cerebro"><span class="ic"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg></span><h3>El cerebro</h3><span class="tech">Backend · API en Workers</span><p>Decide los precios, revisa si hay stock, crea los pedidos y habla con el banco. Nadie puede engañarlo con un precio falso.</p></button>
+      <button class="node" data-k="almacen"><span class="ic"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><h3>El almacén</h3><span class="tech">Base de datos · D1</span><p>Guarda los productos, el stock, los clientes y todos los pedidos. Con copia de seguridad diaria.</p></button>
+      <button class="node" data-k="bodega"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="m21 15-5-5-8 9"/></svg></span><h3>La bodega de fotos</h3><span class="tech">Archivos · R2</span><p>Guarda las fotos de los lentes y las recetas médicas de los clientes, estas bajo llave.</p></button>
+      <div class="arrowrow"><svg class="i pulse" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></div>
+      <div class="rowlabel">Servicios de afuera</div>
+      <button class="node out" data-k="caja"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg></span><h3>La caja registradora</h3><span class="tech">AZUL o CardNet</span><p>El banco cobra la tarjeta en su propia página. La tienda nunca ve los números de la tarjeta.</p></button>
+      <button class="node out" data-k="mensajero"><span class="ic"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span><h3>El mensajero</h3><span class="tech">Correos · Resend</span><p>Le avisa al cliente cada paso: pedido recibido, pagado, enviado y entregado.</p></button>
+      <button class="node out" data-k="whatsapp"><span class="ic"><svg class="i" viewBox="0 0 24 24"><path d="M4 20l1.3-3.9A8 8 0 1 1 8 19Z"/><path d="M9 10c.5 2 2 3.5 4 4"/></svg></span><h3>WhatsApp</h3><span class="tech">Fase 2</span><p>Más adelante, los mismos avisos también por WhatsApp.</p></button>
+    </div>
+  </section>
+
+  <!-- JOURNEY -->
+  <section class="sec" id="compra">
+    <div class="sec-head">
+      <span class="eyebrow">El viaje de una compra</span>
+      <h2>Qué pasa desde que alguien toca “Comprar”</h2>
+      <p class="lead">Seis pasos. Dale a “Ver el recorrido” y mira cómo se mueve un pedido por dentro.</p>
+    </div>
+    <div class="journey">
+      <div>
+        <ol class="steps" id="steps"></ol>
+        <div class="ctrls">
+          <button class="btn primary" id="play" type="button"><svg class="i" viewBox="0 0 24 24"><path d="M7 4v16l13-8Z"/></svg><span>Ver el recorrido</span></button>
+          <button class="btn" id="next" type="button">Siguiente<svg class="i" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></button>
+        </div>
+      </div>
+      <div class="stage" id="stage"></div>
+    </div>
+  </section>
+
+  <!-- CHECKLIST -->
+  <section class="sec" id="lista">
+    <div class="sec-head">
+      <span class="eyebrow">Lo que necesitamos de la empresa</span>
+      <h2>19 cosas que LensPro tiene que entregar</h2>
+      <p class="lead">Las marcadas como <b>urgente</b> frenan el proyecto si no llegan antes del 16 de octubre. Ve marcando lo que recibas; se queda guardado en este navegador.</p>
+    </div>
+    <div class="check-top">
+      <div class="ring"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="36" fill="none" stroke="var(--track)" stroke-width="9"/><circle id="ringbar" cx="42" cy="42" r="36" fill="none" stroke="var(--good)" stroke-width="9" stroke-linecap="round" stroke-dasharray="226.2" stroke-dashoffset="226.2" style="transition:stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1)"/></svg><b id="ringtxt">0/19</b></div>
+      <div class="txt"><strong id="ringhead">Todavía no ha llegado nada</strong><span id="ringsub">Empieza por la cuenta del banco: es lo que más tarda.</span></div>
+    </div>
+    <div class="groups" id="groups"></div>
+  </section>
+
+  <!-- TIMELINE -->
+  <section class="sec" id="calendario">
+    <div class="sec-head">
+      <span class="eyebrow">Calendario</span>
+      <h2>Del 12 de octubre al 1 de diciembre</h2>
+      <p class="lead">Cada barra es una etapa. La del banco va en paralelo porque solo depende de ellos. La semana del Desafío Naranja va más suave.</p>
+    </div>
+    <div class="tl"><div class="tl-in" id="tl"></div></div>
+  </section>
+
+  <!-- COSTS -->
+  <section class="sec" id="costos">
+    <div class="sec-head">
+      <span class="eyebrow">Cuánto cuesta mantenerla</span>
+      <h2>Casi nada mientras las ventas crecen</h2>
+    </div>
+    <div class="costs">
+      <div class="bigcost">
+        <span class="eyebrow" style="color:inherit;opacity:.7">Al empezar</span>
+        <div class="v">≈US$5<small> / mes</small></div>
+        <p>Más la comisión del banco por cada venta con tarjeta. Montos aproximados: hay que confirmarlos antes de cotizar.</p>
+      </div>
+      <div class="clist">
+        <div class="crow"><div><b>Cloudflare</b><span>Tienda, cerebro, almacén y tareas automáticas</span></div><div class="p">US$5</div></div>
+        <div class="crow"><div><b>Bodega de fotos</b><span>10 GB gratis</span></div><div class="p">US$0–2</div></div>
+        <div class="crow"><div><b>Fotos optimizadas</b><span>5,000 gratis al mes</span></div><div class="p">US$0–3</div></div>
+        <div class="crow"><div><b>Correos</b><span>3,000 gratis al mes</span></div><div class="p">US$0–20</div></div>
+        <div class="crow"><div><b>Guardia y estadísticas</b><span>Turnstile y Web Analytics</span></div><div class="p free">Gratis</div></div>
+        <div class="crow"><div><b>Dominio .com.do</b><span>Pago anual</span></div><div class="p">Por confirmar</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- NOW -->
+  <section class="sec" id="ya">
+    <div class="sec-head">
+      <span class="eyebrow">Lo que hay que hacer ya</span>
+      <h2>Tres pasos para arrancar</h2>
+    </div>
+    <div class="now">
+      <div class="do"><span class="when">Esta semana</span><h3>Que LensPro pida la cuenta del banco</h3><p>Afiliación con AZUL o CardNet para cobrar con tarjeta. Tarda de 2 a 4 semanas; si no llega, salimos con transferencia y contra entrega.</p></div>
+      <div class="do"><span class="when">Lunes 12 de octubre</span><h3>Enviarles la lista y la plantilla</h3><p>La lista de 19 cosas, la plantilla de Excel del catálogo y la guía para tomar las fotos.</p></div>
+      <div class="do"><span class="when">Antes del 16 de octubre</span><h3>Recibir lo urgente</h3><p>Banco, RNC, dominio, catálogo, fotos, costos de envío y la persona que aprueba. Con eso empieza la construcción.</p></div>
+    </div>
+  </section>
+
+  <p class="foot">Plan técnico completo, con todos los detalles: <a href="https://claude.ai/code/artifact/b115a35e-485c-4489-87d4-841f4fd28677" target="_blank" rel="noopener">LensPro · Plan del e-commerce en Cloudflare</a> · Prototipo: <a href="https://claude.ai/artifact/Lbo3vqs5gBwtEnYBzoT7gs" target="_blank" rel="noopener">ver la tienda</a></p>
+</main>
+
+<script>
+(() => {
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const ico = d => `<svg class="i" viewBox="0 0 24 24">${d}</svg>`;
+
+/* countdown */
+const launch = new Date('2026-12-01T00:00:00-04:00');
+const days = Math.max(0, Math.ceil((launch - new Date()) / 864e5));
+document.getElementById('days').textContent = days;
+
+/* how it works: highlight what each piece talks to */
+const LINKS = {vitrina:['seguridad','cerebro'],oficina:['seguridad','cerebro'],seguridad:['vitrina','oficina'],cerebro:['vitrina','oficina','almacen','bodega','caja','mensajero'],almacen:['cerebro'],bodega:['cerebro','vitrina'],caja:['cerebro'],mensajero:['cerebro'],whatsapp:['cerebro']};
+const flow = document.getElementById('flow');
+flow.addEventListener('click', e => {
+  const n = e.target.closest('.node'); if (!n) return;
+  const k = n.dataset.k, was = n.classList.contains('on') && !n.classList.contains('rel');
+  flow.querySelectorAll('.node').forEach(x => x.classList.remove('on','rel'));
+  if (was) return;
+  n.classList.add('on');
+  (LINKS[k]||[]).forEach(o => flow.querySelector(`[data-k="${o}"]`)?.classList.add('on','rel'));
+});
+
+/* journey */
+const STEPS = [
+  {t:'Elige sus lentes', who:'Cliente · la vitrina', ic:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', d:'Mira el catálogo, cambia de color en la foto y agrega al carrito. El carrito se guarda aunque cierre la página.'},
+  {t:'Confirma la compra', who:'El cerebro', ic:'<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6Z"/><path d="m9 12 2 2 4-4"/>', d:'El cerebro recalcula precio, envío y descuentos, y aparta los lentes del almacén para que nadie más compre el último.'},
+  {t:'Paga', who:'La caja registradora · el banco', ic:'<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/>', d:'Con tarjeta va a la página segura del banco. También puede elegir transferencia o pagar cuando le llegue.'},
+  {t:'El banco avisa', who:'El cerebro', ic:'<path d="M5 12.5l4.5 4.5L19 7.5"/>', d:'El banco confirma el pago y el pedido pasa a “Pagado”. Si en 30 minutos no paga, los lentes vuelven a estar disponibles.'},
+  {t:'LensPro prepara y envía', who:'La oficina', ic:'<path d="M2.5 6h11v10h-11zM13.5 9.5h4l3 3.5V16h-7"/><circle cx="6.5" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>', d:'El personal ve el pedido nuevo en el panel, lo empaca, pone el número de guía y lo marca como enviado.'},
+  {t:'El cliente recibe', who:'El mensajero', ic:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>', d:'Recibe un correo en cada paso y puede ver en la tienda dónde va su pedido hasta que llega.'},
+];
+let cur = 0, timer = null;
+const stepsEl = document.getElementById('steps'), stage = document.getElementById('stage'), playBtn = document.getElementById('play');
+stepsEl.innerHTML = STEPS.map((s,i) => `<li><button type="button" data-i="${i}"><span class="n">${i+1}</span><span class="t">${s.t}</span></button></li>`).join('');
+function show(i){
+  cur = i; const s = STEPS[i];
+  stepsEl.querySelectorAll('li').forEach((li,k) => { li.classList.toggle('on', k===i); li.classList.toggle('done', k<i); });
+  stage.innerHTML = `<span class="ic">${ico(s.ic)}</span><span class="who">Paso ${i+1} de 6 · ${s.who}</span><h3>${s.t}</h3><p>${s.d}</p>`;
+  stage.classList.remove('anim'); void stage.offsetWidth; if (!reduce) stage.classList.add('anim');
+}
+function stop(){ clearInterval(timer); timer = null; playBtn.querySelector('span').textContent = 'Ver el recorrido'; }
+stepsEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { stop(); show(+b.dataset.i); } });
+document.getElementById('next').addEventListener('click', () => { stop(); show((cur + 1) % STEPS.length); });
+playBtn.addEventListener('click', () => {
+  if (timer) return stop();
+  show(0); playBtn.querySelector('span').textContent = 'Pausar';
+  timer = setInterval(() => { if (cur >= STEPS.length - 1) return stop(); show(cur + 1); }, 2600);
+});
+show(0);
+
+/* checklist */
+const GROUPS = [
+  {name:'Para poder cobrar', ic:'<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/>', items:[
+    ['banco','Cuenta del banco para tarjetas','AZUL o CardNet. Tarda de 2 a 4 semanas',1],
+    ['rnc','Razón social y RNC','Nombre legal y dirección fiscal',1],
+    ['transfer','Cuenta para transferencias','Banco, tipo, número y titular',0],
+    ['fiscal','Comprobantes fiscales','Si usan NCF o e-CF y quién factura',0]]},
+  {name:'El catálogo', ic:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="m21 15-5-5-8 9"/>', items:[
+    ['excel','Lista de productos en Excel','Precios, colores, stock y medidas, en la plantilla que les enviamos',1],
+    ['fotos','Fotos de cada producto','Frente, 3/4 y lateral, fondo blanco, por cada color',1],
+    ['graduados','Lentes graduados','Tipos de cristal, precios y qué piden de la receta',0],
+    ['estilo','Fotos de gente usando los lentes','Para los banners del inicio',0]]},
+  {name:'Las reglas de la tienda', ic:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>', items:[
+    ['envio','Costos y zonas de envío','Precio por provincia y desde cuánto es gratis',1],
+    ['devol','Política de devoluciones','Plazo, condiciones y quién paga el envío de vuelta',0],
+    ['garantia','Garantía','Qué cubre y por cuánto tiempo',0],
+    ['contacto','Datos de contacto','WhatsApp, correo, horario y tiendas físicas',0],
+    ['avisos','Correo para pedidos nuevos','Donde llega cada venta',0]]},
+  {name:'Marca y equipo', ic:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5c2 .6 3.2 2.6 3.5 5.5"/>', items:[
+    ['aprueba','Una persona que apruebe','Decide diseño, textos y precios en menos de 48 horas',1],
+    ['dominio','El dominio','Ej. lenspro.com.do, o el acceso si ya lo tienen',1],
+    ['logo','Logo y colores','Logo en SVG o AI, colores y letras oficiales',0],
+    ['equipo','Quién usará el panel','Nombre, correo y si es admin o vendedor',0],
+    ['textos','Textos de la tienda','Quiénes somos y promoción de lanzamiento',0],
+    ['redes','Redes y publicidad','Enlaces y acceso a Meta o Google si harán anuncios',0]]},
+];
+const KEY = 'lenspro-checklist';
+let done = {}; try { done = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) {}
+const total = GROUPS.reduce((a,g) => a + g.items.length, 0);
+document.getElementById('groups').innerHTML = GROUPS.map(g => `<div class="group"><h3><span class="ic">${ico(g.ic)}</span>${g.name}</h3>${g.items.map(([id,t,d,u]) =>
+  `<label class="item ${done[id]?'is-done':''}" for="c-${id}"><input type="checkbox" id="c-${id}" data-id="${id}" ${done[id]?'checked':''}><span class="w"><b>${t}</b><span>${d}</span></span>${u?`<span class="tag">${done[id]?'Listo':'Urgente'}</span>`:''}</label>`).join('')}</div>`).join('');
+function paint(){
+  const n = Object.values(done).filter(Boolean).length;
+  document.getElementById('ringbar').style.strokeDashoffset = 226.2 * (1 - n / total);
+  document.getElementById('ringtxt').textContent = `${n}/${total}`;
+  const urgent = GROUPS.flatMap(g => g.items).filter(x => x[3] && !done[x[0]]).length;
+  document.getElementById('ringhead').textContent = n === 0 ? 'Todavía no ha llegado nada' : n === total ? '¡Todo recibido! Podemos construir sin frenos' : `Van ${n} de ${total} recibidas`;
+  document.getElementById('ringsub').textContent = urgent ? `Faltan ${urgent} urgentes. Empieza por la cuenta del banco: es lo que más tarda.` : 'Ya llegó todo lo urgente. Lo demás puede llegar durante la construcción.';
+}
+document.getElementById('groups').addEventListener('change', e => {
+  const c = e.target; if (!c.dataset.id) return;
+  done[c.dataset.id] = c.checked;
+  const lab = c.closest('.item'); lab.classList.toggle('is-done', c.checked);
+  const tag = lab.querySelector('.tag'); if (tag) tag.textContent = c.checked ? 'Listo' : 'Urgente';
+  try { localStorage.setItem(KEY, JSON.stringify(done)); } catch(e) {}
+  paint();
+});
+paint();
+
+/* timeline */
+const T0 = Date.parse('2026-10-12'), T1 = Date.parse('2026-12-01');
+const pct = d => ((Date.parse(d) - T0) / (T1 - T0) * 100);
+const PH = [
+  ['Arranque','reunión y materiales','2026-10-12','2026-10-16','main'],
+  ['Cuenta del banco','la pide LensPro','2026-10-12','2026-11-06','side'],
+  ['Catálogo y base','la tienda empieza a verse','2026-10-19','2026-10-30',''],
+  ['Desafío Naranja','semana más suave','2026-11-03','2026-11-06','warn'],
+  ['Carrito y pagos','se puede comprar','2026-11-02','2026-11-13',''],
+  ['Panel de la tienda','la oficina de LensPro','2026-11-16','2026-11-20',''],
+  ['Pruebas y fotos','todo en celulares reales','2026-11-23','2026-11-27',''],
+];
+const weeks = ['2026-10-12','2026-10-19','2026-10-26','2026-11-02','2026-11-09','2026-11-16','2026-11-23','2026-11-30'];
+const M = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const day = d => `${+d.slice(8)} ${M[+d.slice(5,7)-1]}`;
+let html = `<div class="tl-weeks"><span></span><div class="scale">${weeks.map(w => `<span style="left:${pct(w)}%">${day(w)}</span>`).join('')}</div></div>`;
+html += PH.map(([n,s,a,b,k],i) => `<div class="tl-row"><div class="name">${n}<small>${s}</small></div><div class="lane"><span class="bar ${k}" title="${day(a)} a ${day(b)}" style="left:${pct(a)}%;width:${Math.max(1.5,pct(b)-pct(a)+2)}%;animation-delay:${i*90}ms"></span></div></div>`).join('');
+html += `<div class="tl-row"><div class="name">Lanzamiento<small>martes 1 de diciembre</small></div><div class="lane"><span class="diamond" style="left:calc(100% - 10px)"></span></div></div>`;
+const now = Date.now();
+if (now >= T0 && now <= T1) html += `<div class="today" style="left:calc(180px + (100% - 180px) * ${((now - T0)/(T1 - T0)).toFixed(4)})"><span>Hoy</span></div>`;
+document.getElementById('tl').innerHTML = html;
+})();
+</script>
