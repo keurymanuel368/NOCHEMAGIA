@@ -752,6 +752,7 @@ async function runFilm(){
   await intro();
 
   // 1 · Bienvenida
+  console.log('MARK 1 Bienvenida');
   caption(0, '01 · Bienvenida', 'Tu verano empieza *aquí', 'Una entrada con la esencia de la marca');
   await sleep(1600);
   await go('onb', 'fade'); stagger($$('.slide:first-child > *', cur), 90);
@@ -771,6 +772,7 @@ async function runFilm(){
   await go('login', 'push');
 
   // 2 · Crea tu cuenta
+  console.log('MARK 2 Crea tu cuenta');
   caption(1, '02 · Tu cuenta', 'Registro en segundos', 'Crea tu cuenta con correo, Google o Apple');
   await cam({ry:-7, x:-30});
   await sleep(500);
@@ -797,6 +799,7 @@ async function runFilm(){
   await sleep(2800);
 
   // 3 · Explora
+  console.log('MARK 3 Explora');
   caption(2, '03 · Explora', 'Toda la colección', 'Busca por estilo, descubre lo nuevo y lo más vendido');
   cam({ry:6, x:30});
   await go('home', 'fade');
@@ -824,6 +827,7 @@ async function runFilm(){
   await sleep(1100);
 
   // 4 · Elige tu estilo
+  console.log('MARK 4 Elige tu estilo');
   caption(3, '04 · Tu estilo', 'Cada modelo, *cada *color', 'Desliza para ver los colores y guarda tus favoritos');
   cam({ry:0, x:0});
   const coralCard = $('.card[data-id="coral"]', cur);
@@ -851,6 +855,7 @@ async function runFilm(){
   await sleep(900);
 
   // 5 · Al carrito
+  console.log('MARK 5 Al carrito');
   caption(4, '05 · Al carrito', 'Un toque y *listo', 'Elige la cantidad y agrégalo con una animación que se siente');
   await sleep(400);
   await tap('#qplus'); $('#q', cur).textContent = '2';
@@ -884,6 +889,7 @@ async function runFilm(){
   await sleep(2300);
 
   // 6 · Pago
+  console.log('MARK 6 Pago');
   caption(5, '06 · Pago seguro', 'Paga fácil y *seguro', 'Cupones, tarjeta, transferencia o contra entrega');
   cam({ry:-6, x:-24});
   await tap('.bar .cartbtn');
@@ -920,6 +926,7 @@ async function runFilm(){
   await sleep(2600);
 
   // 7 · Sigue tu pedido
+  console.log('MARK 7 Sigue tu pedido');
   caption(6, '07 · Tu pedido', 'Hasta tu *puerta', 'Cada paso del envío, en tiempo real');
   cam({ry:5, x:24});
   await tap('#trackBtn');
@@ -935,6 +942,7 @@ async function runFilm(){
   await sleep(2400);
 
   // 8 · Tu cuenta
+  console.log('MARK 8 Tu cuenta');
   caption(7, '08 · Tu perfil', 'Entra cuando *quieras', 'Pedidos, direcciones y favoritos en un solo lugar');
   cam({ry:0, x:0});
   await tap('.tabbar .tb[data-tab="3"]');
@@ -955,7 +963,9 @@ async function runFilm(){
   stagger([...$$('.hdr,.search,.promo', cur), ...$$('.cat', cur), ...$$('.card', cur)], 45);
   await sleep(2000);
 
+  console.log('MARK outro');
   await outro();
+  console.log('MARK end');
 }
 window.runFilm = runFilm;
 document.fonts.ready.then(() => { window.__ready = true; });
