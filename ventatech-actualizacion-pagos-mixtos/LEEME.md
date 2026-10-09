@@ -1,5 +1,22 @@
 # VentaTech: pagos mixtos, cierre de caja detallado y dashboard corregido
 
+## Revisión de todos los cálculos (10-oct)
+
+No necesita SQL nuevo. Errores encontrados y corregidos:
+
+| Dónde | Error | Corrección |
+| --- | --- | --- |
+| POS: total del carrito | No se redondeaba a centavos; con productos por peso (0.333 lb × RD$45) el total en pantalla podía diferir por centavos de la factura. | Cada línea y el total se redondean a centavos. |
+| POS: descuento manual | Podía ser mayor que la venta: la pantalla mostraba RD$0 pero a la factura llegaba un descuento más grande que el subtotal. | Se limita a lo que queda después del cupón. |
+| Ventas (servidor) | Aceptaba cantidades, precios o descuentos negativos si se mandaban por fuera de la pantalla. | Se rechazan. |
+| Devoluciones | El total incluía productos de "venta rápida" que luego no se devolvían; no se podían devolver fracciones (libras, kg); si el mismo producto venía en dos líneas, lo devuelto se contaba doble; el monto ignoraba el descuento que tuvo la venta. | Venta rápida marcada como no devolvible; fracciones permitidas según la unidad; líneas agrupadas por producto; el monto mostrado es lo que el cliente realmente pagó. |
+| Devoluciones: ventas del día | Usaba la hora de la computadora. | Hora de RD. |
+| Compras | Aceptaba cantidades y precios negativos (una cantidad negativa restaba inventario). | Validado en pantalla y en el servidor. |
+| Abonos | Montos con más de 2 decimales. | Redondeo a centavos (pantalla y servidor). |
+| Gastos | Un gasto en cero o negativo sumaba dinero a la utilidad y a la caja. | Debe ser mayor que cero. |
+| Inventario: valor al costo | Los productos con existencia negativa restaban valor. | Cuentan como cero. |
+| Deudas pendientes | El dashboard y Clientes usaban el saldo guardado en cada cliente; Fiado sumaba las deudas una por una. Si no coincidían, cada pantalla daba otro número. | Las tres pantallas suman las deudas pendientes y parciales. |
+
 ## Corrección: cierre de caja y contabilidad (números que aparecían y desaparecían)
 
 **Ejecuta `cierres-de-caja.sql`** en Supabase.

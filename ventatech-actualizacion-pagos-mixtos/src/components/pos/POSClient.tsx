@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Wallet, ShoppingCart, ShoppingBag, ClipboardList, PauseCircle } from "lucide-react";
 import type { UsuarioProfile } from "@/lib/auth";
 import type { Cliente, Producto, CartLine } from "@/lib/pos/types";
-import { lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
+import { centavos, lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
 import type { CajaSesion } from "@/lib/caja/queries";
 import type { CajaAbiertaPOS } from "@/lib/pos/queries";
 import { precioEfectivo, esUnidadEntera } from "@/lib/pos/types";
@@ -96,8 +96,11 @@ export function POSClient({
 
   const cajaAbierta = Boolean(cajaInicial);
 
+  // Cada línea se redondea a centavos, igual que la guarda la factura: con
+  // productos por peso (0.333 lb × RD$45 = 14.985) el POS mostraba un total
+  // distinto por centavos al de la factura.
   const subtotal = useMemo(
-    () => carrito.reduce((s, i) => s + i.precio * i.cantidad, 0),
+    () => centavos(carrito.reduce((s, i) => s + centavos(i.precio * i.cantidad), 0)),
     [carrito]
   );
   const cuponDescuento = useMemo(() => {
@@ -108,8 +111,11 @@ export function POSClient({
         : cuponAplicado.valor;
     return Math.min(calculado, subtotal);
   }, [cuponAplicado, subtotal]);
-  const descuentoTotal = descuento + cuponDescuento;
-  const total = Math.max(subtotal - descuentoTotal, 0);
+  // El descuento manual nunca puede pasar de lo que queda después del cupón:
+  // antes se mandaba a la factura un descuento mayor que la venta.
+  const descuentoManual = centavos(Math.min(Math.max(descuento, 0), Math.max(subtotal - cuponDescuento, 0)));
+  const descuentoTotal = centavos(descuentoManual + cuponDescuento);
+  const total = centavos(Math.max(subtotal - descuentoTotal, 0));
 
   async function aplicarCupon(codigo: string): Promise<string | null> {
     const res = await aplicarCuponAction(codigo, subtotal);
@@ -446,7 +452,7 @@ export function POSClient({
           carrito.map((i) => ({
             nombre: i.nombre,
             cantidad: i.cantidad,
-            subtotal: i.precio * i.cantidad,
+            subtotal: centavos(i.precio * i.cantidad),
           })),
         subtotal: confirmado?.subtotal ?? subtotal,
         descuento: confirmado?.descuento ?? descuentoTotal,
@@ -499,7 +505,7 @@ export function POSClient({
         pagos: pago.pagos,
         // Solo el descuento manual: si hay cupón, el servidor recalcula su
         // monto internamente en vez de confiar en lo que mande el navegador.
-        descuento,
+        descuento: descuentoManual,
         ncfTipo,
         cuponId: cuponAplicado?.cuponId ?? null,
         localId: ventaLocalId,

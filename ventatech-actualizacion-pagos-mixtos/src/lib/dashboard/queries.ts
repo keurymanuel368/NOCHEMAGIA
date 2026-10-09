@@ -140,8 +140,15 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     rangoAyer ? resumenVentas(supabase, rangoAyer) : Promise.resolve(SIN_VENTAS),
     resumenVentas(supabase, { desde: inicioDeMesISO(), hasta: null }),
     resumenVentas(supabase, { desde: inicioDeMesAnteriorISO(), hasta: inicioDeMesISO() }),
+    // Deudas pendientes desde las deudas mismas (igual que la pantalla de
+    // Fiado), no desde el saldo guardado en cada cliente, que podía diferir.
     traerTodas((a, b) =>
-      supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0).order("id").range(a, b)
+      supabase
+        .from("deudas")
+        .select("cliente_id, saldo")
+        .in("estado", ["pendiente", "parcial"])
+        .order("id")
+        .range(a, b)
     ),
     traerTodas((a, b) =>
       supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true).order("id").range(a, b)
@@ -155,7 +162,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   const clientesAtendidosHoy = ventasHoyCount;
 
   const deudaRows = clientes.data ?? [];
-  const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
+  const deudasPendientesTotal = centavos(deudaRows.reduce((s, d) => s + Number(d.saldo), 0));
+  const clientesConDeuda = new Set(deudaRows.map((d) => d.cliente_id)).size;
 
   const productosRows = productos.data ?? [];
   const productosAgotados = productosRows.filter((p) => Number(p.stock) <= 0).length;
@@ -181,7 +189,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     ventasMesDevoluciones: mes.devuelto,
     ingresosMesAnteriorTotal: mesAnterior.neto,
     deudasPendientesTotal,
-    clientesConDeuda: deudaRows.length,
+    clientesConDeuda,
     productosBajos: productosAgotados + productosStockBajoNoAgotados,
     productosAgotados,
     productosStockBajoNoAgotados,

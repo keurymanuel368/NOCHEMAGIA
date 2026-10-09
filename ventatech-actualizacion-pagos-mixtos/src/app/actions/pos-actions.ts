@@ -200,6 +200,13 @@ export async function registrarVentaAction(input: {
     avisoPagos?: string;
   }
 > {
+  // Validación de montos en el servidor (no solo en la pantalla).
+  if (input.items.length === 0) return { error: "La venta no tiene productos" };
+  if (input.items.some((i) => !(Number(i.cantidad) > 0) || (i.precio !== undefined && !(Number(i.precio) >= 0)))) {
+    return { error: "Cantidades y precios de la venta deben ser mayores que cero" };
+  }
+  if (!(Number(input.descuento) >= 0)) return { error: "El descuento no puede ser negativo" };
+
   const esMixto = input.metodoPago === "mixto";
   if (esMixto) {
     const error = validarPartes(input.pagos);
@@ -220,7 +227,7 @@ export async function registrarVentaAction(input: {
     p_items: input.items,
     p_cliente_id: input.clienteId,
     p_metodo_pago: metodoRpc,
-    p_descuento: input.descuento,
+    p_descuento: Math.round(Number(input.descuento) * 100) / 100,
     p_ncf_tipo: input.ncfTipo || null,
     p_cupon_id: input.cuponId || null,
     p_local_id: input.localId || null,

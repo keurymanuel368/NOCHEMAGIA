@@ -230,8 +230,69 @@ index 0000000..0009a9f
 +      check (metodo_pago in ('efectivo', 'tarjeta', 'transferencia', 'fiado', 'mixto')) not valid;
 +  end if;
 +end $$;
+diff --git a/src/app/actions/clientes-actions.ts b/src/app/actions/clientes-actions.ts
+index f6bb64d..3da8ad1 100644
+--- a/src/app/actions/clientes-actions.ts
++++ b/src/app/actions/clientes-actions.ts
+@@ -43,10 +43,12 @@ export async function registrarAbonoAction(input: {
+   metodoPago: string;
+   notas?: string;
+ }): Promise<ClienteActionState> {
++  const monto = Math.round(Number(input.monto) * 100) / 100;
++  if (!Number.isFinite(monto) || monto <= 0) return { error: "Monto inválido" };
+   const supabase = await createClient();
+   const { error } = await supabase.rpc("registrar_abono", {
+     p_deuda_id: input.deudaId,
+-    p_monto: input.monto,
++    p_monto: monto,
+     p_metodo_pago: input.metodoPago,
+     p_notas: input.notas ?? null,
+   });
+diff --git a/src/app/actions/contabilidad-actions.ts b/src/app/actions/contabilidad-actions.ts
+index a5b8a48..e64d51f 100644
+--- a/src/app/actions/contabilidad-actions.ts
++++ b/src/app/actions/contabilidad-actions.ts
+@@ -23,6 +23,10 @@ export async function guardarGastoAction(
+   _prev: GastoActionState,
+   formData: FormData
+ ): Promise<GastoActionState> {
++  // Un gasto en cero o negativo sumaba dinero a la utilidad y al efectivo
++  // esperado de la caja.
++  const monto = Math.round(Number(formData.get("monto") || 0) * 100) / 100;
++  if (!Number.isFinite(monto) || monto <= 0) return { error: "El monto del gasto debe ser mayor que cero" };
+   const supabase = await createClient();
+   const id = formData.get("id");
+ 
+@@ -30,7 +34,7 @@ export async function guardarGastoAction(
+     p_id: id ? String(id) : null,
+     p_descripcion: String(formData.get("descripcion") ?? ""),
+     p_categoria_gasto: String(formData.get("categoria_gasto") ?? "General"),
+-    p_monto: Number(formData.get("monto") || 0),
++    p_monto: monto,
+     p_metodo_pago: String(formData.get("metodo_pago") ?? "efectivo"),
+     p_notas: String(formData.get("notas") ?? ""),
+   });
+diff --git a/src/app/actions/inventario-actions.ts b/src/app/actions/inventario-actions.ts
+index b93f6d8..5445ae6 100644
+--- a/src/app/actions/inventario-actions.ts
++++ b/src/app/actions/inventario-actions.ts
+@@ -379,6 +379,14 @@ export async function registrarCompraAction(input: {
+   proveedorId: string | null;
+   notas: string;
+ }): Promise<InvActionState> {
++  if (
++    input.items.length === 0 ||
++    input.items.some(
++      (i) => !(Number(i.cantidad) > 0) || !(Number(i.precio_unitario) >= 0) || !Number.isFinite(Number(i.precio_unitario))
++    )
++  ) {
++    return { error: "Cantidades y precios deben ser mayores que cero" };
++  }
+   const supabase = await createClient();
+   const { data, error } = await supabase.rpc("registrar_compra", {
+     p_items: input.items,
 diff --git a/src/app/actions/pos-actions.ts b/src/app/actions/pos-actions.ts
-index b88225f..f526b1c 100644
+index b88225f..0cb0d2a 100644
 --- a/src/app/actions/pos-actions.ts
 +++ b/src/app/actions/pos-actions.ts
 @@ -2,24 +2,103 @@
@@ -422,7 +483,7 @@ index b88225f..f526b1c 100644
  }): Promise<
    PosActionState & {
      ventaId?: string;
-@@ -47,21 +194,71 @@ export async function registrarVentaAction(input: {
+@@ -47,21 +194,78 @@ export async function registrarVentaAction(input: {
      descuento?: number;
      total?: number;
      items?: { nombre: string; cantidad: number; subtotal: number }[];
@@ -432,6 +493,13 @@ index b88225f..f526b1c 100644
 +    avisoPagos?: string;
    }
  > {
++  // Validación de montos en el servidor (no solo en la pantalla).
++  if (input.items.length === 0) return { error: "La venta no tiene productos" };
++  if (input.items.some((i) => !(Number(i.cantidad) > 0) || (i.precio !== undefined && !(Number(i.precio) >= 0)))) {
++    return { error: "Cantidades y precios de la venta deben ser mayores que cero" };
++  }
++  if (!(Number(input.descuento) >= 0)) return { error: "El descuento no puede ser negativo" };
++
 +  const esMixto = input.metodoPago === "mixto";
 +  if (esMixto) {
 +    const error = validarPartes(input.pagos);
@@ -452,8 +520,9 @@ index b88225f..f526b1c 100644
      p_items: input.items,
      p_cliente_id: input.clienteId,
 -    p_metodo_pago: input.metodoPago,
+-    p_descuento: input.descuento,
 +    p_metodo_pago: metodoRpc,
-     p_descuento: input.descuento,
++    p_descuento: Math.round(Number(input.descuento) * 100) / 100,
      p_ncf_tipo: input.ncfTipo || null,
      p_cupon_id: input.cuponId || null,
      p_local_id: input.localId || null,
@@ -497,7 +566,7 @@ index b88225f..f526b1c 100644
  
    const [{ data: venta }, { data: items }] = await Promise.all([
      supabase
-@@ -75,8 +272,26 @@ export async function registrarVentaAction(input: {
+@@ -75,8 +279,26 @@ export async function registrarVentaAction(input: {
        .eq("venta_id", ventaId),
    ]);
  
@@ -525,7 +594,7 @@ index b88225f..f526b1c 100644
    return {
      success: "Venta registrada",
      ventaId,
-@@ -91,6 +306,8 @@ export async function registrarVentaAction(input: {
+@@ -91,6 +313,8 @@ export async function registrarVentaAction(input: {
        cantidad: Number(i.cantidad),
        subtotal: Number(i.subtotal),
      })),
@@ -534,7 +603,7 @@ index b88225f..f526b1c 100644
    };
  }
  
-@@ -170,3 +387,61 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
+@@ -170,3 +394,61 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
    revalidatePath("/pos");
    return { success: "Venta aparcada eliminada" };
  }
@@ -1030,6 +1099,24 @@ index e3aabe9..5620002 100644
                    cajero: cajaActual.cajero_nombre,
                    abiertaAt: cajaActual.abierta_at,
                  }
+diff --git a/src/components/clientes/AbonoModal.tsx b/src/components/clientes/AbonoModal.tsx
+index 4dc1c58..989fbbd 100644
+--- a/src/components/clientes/AbonoModal.tsx
++++ b/src/components/clientes/AbonoModal.tsx
+@@ -29,9 +29,10 @@ export function AbonoModal({
+   const [pending, startTransition] = useTransition();
+ 
+   function confirmar() {
+-    const m = Number(monto);
+-    if (Number.isNaN(m) || m <= 0) return setError("Monto inválido");
+-    if (m > saldo) return setError(`El monto supera el saldo (${formatMoney(saldo)})`);
++    // A centavos: "100.555" se guardaba con decimales de más y no cuadraba.
++    const m = Math.round(Number(monto) * 100) / 100;
++    if (!Number.isFinite(m) || m <= 0) return setError("Monto inválido");
++    if (m > Math.round(saldo * 100) / 100) return setError(`El monto supera el saldo (${formatMoney(saldo)})`);
+     startTransition(async () => {
+       const res = await registrarAbonoAction({ deudaId, monto: m, metodoPago: metodo, notas });
+       if (res.error) return setError(res.error);
 diff --git a/src/components/clientes/AbonosTab.tsx b/src/components/clientes/AbonosTab.tsx
 index ac6c888..496ab2e 100644
 --- a/src/components/clientes/AbonosTab.tsx
@@ -1186,6 +1273,196 @@ index 624bf0e..a377957 100644
  };
  
  function formatHora(fecha: string) {
+diff --git a/src/components/devoluciones/DevolucionWizard.tsx b/src/components/devoluciones/DevolucionWizard.tsx
+index 47864c4..b2569d6 100644
+--- a/src/components/devoluciones/DevolucionWizard.tsx
++++ b/src/components/devoluciones/DevolucionWizard.tsx
+@@ -6,6 +6,8 @@ import { Search, Check } from "lucide-react";
+ import { createClient } from "@/lib/supabase/client";
+ import { registrarDevolucionAction, type ItemDevolucionInput } from "@/app/actions/devoluciones-actions";
+ import { formatMoney } from "@/lib/money";
++import { centavos } from "@/lib/pagos";
++import { hoyRD, inicioDiaRD } from "@/lib/fecha-rd";
+ import { useToast } from "@/components/ui/ToastProvider";
+ 
+ type VentaResultado = {
+@@ -23,6 +25,8 @@ type ItemVenta = {
+   ya_devuelto: number;
+   disponible: number;
+   precio_unitario: number;
++  /** "unidad" se devuelve en enteros; libra, kg, etc. admiten fracciones. */
++  unidad: string;
+ };
+ 
+ const PASOS = ["Buscar Venta", "Seleccionar Productos", "Confirmar"] as const;
+@@ -73,8 +77,8 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+     let cancelado = false;
+     const supabase = createClient();
+     (async () => {
+-      const inicioDia = new Date();
+-      inicioDia.setHours(0, 0, 0, 0);
++      // Inicio del día en hora de RD (no según el reloj de la computadora).
++      const inicioDia = new Date(inicioDiaRD(hoyRD()));
+       const { data } = await supabase
+         .from("ventas")
+         .select("id, numero_factura, fecha, total, metodo_pago, clientes(nombre)")
+@@ -123,7 +127,7 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+       const [{ data: detalle }, { data: devueltos }] = await Promise.all([
+         supabase
+           .from("venta_items")
+-          .select("producto_id, nombre_producto, cantidad, precio_unitario")
++          .select("producto_id, nombre_producto, cantidad, precio_unitario, subtotal")
+           .eq("venta_id", venta.id),
+         supabase
+           .from("devoluciones_detalle")
+@@ -138,16 +142,42 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+         yaDevueltoPorProducto.set(key, (yaDevueltoPorProducto.get(key) ?? 0) + Number(d.cantidad));
+       }
+ 
+-      const filas: ItemVenta[] = (detalle ?? []).map((d) => {
+-        const ya = yaDevueltoPorProducto.get(d.producto_id ?? "") ?? 0;
+-        const original = Number(d.cantidad);
++      // Unidad de cada producto (para permitir fracciones en libras, kg...).
++      const ids = [...new Set((detalle ?? []).map((d) => d.producto_id).filter(Boolean))] as string[];
++      const { data: prods } = ids.length
++        ? await supabase.from("productos").select("id, unidad").in("id", ids)
++        : { data: [] as { id: string; unidad: string | null }[] };
++      if (cancelado) return;
++      const unidadPorProducto = new Map((prods ?? []).map((p) => [p.id as string, (p.unidad as string) ?? "unidad"]));
++
++      // Un mismo producto puede venir en varias líneas de la factura: se
++      // agrupan, porque lo ya devuelto se cuenta por producto. Antes cada
++      // línea restaba todo lo devuelto y la misma cantidad se sumaba dos veces.
++      const grupos = new Map<string, { producto_id: string | null; nombre: string; cantidad: number; subtotal: number }>();
++      for (const d of detalle ?? []) {
++        const key = d.producto_id ?? `rapida:${d.nombre_producto}`;
++        const g = grupos.get(key) ?? { producto_id: d.producto_id, nombre: d.nombre_producto, cantidad: 0, subtotal: 0 };
++        g.cantidad += Number(d.cantidad);
++        g.subtotal += Number(d.subtotal ?? Number(d.cantidad) * Number(d.precio_unitario));
++        grupos.set(key, g);
++      }
++
++      // Si la venta tuvo descuento o cupón, al cliente se le devuelve lo que
++      // realmente pagó por esos productos, no el precio de lista.
++      const sumaLineas = [...grupos.values()].reduce((acc, g) => acc + g.subtotal, 0);
++      const factor = sumaLineas > 0 ? Math.min(1, venta.total / sumaLineas) : 1;
++
++      const filas: ItemVenta[] = [...grupos.values()].map((g) => {
++        const ya = g.producto_id ? yaDevueltoPorProducto.get(g.producto_id) ?? 0 : 0;
+         return {
+-          producto_id: d.producto_id,
+-          nombre_producto: d.nombre_producto,
+-          cantidad_original: original,
++          producto_id: g.producto_id,
++          nombre_producto: g.nombre,
++          cantidad_original: g.cantidad,
+           ya_devuelto: ya,
+-          disponible: Math.max(0, original - ya),
+-          precio_unitario: Number(d.precio_unitario),
++          // Los artículos de "venta rápida" no son del inventario: no se devuelven aquí.
++          disponible: g.producto_id ? Math.max(0, Math.round((g.cantidad - ya) * 1000) / 1000) : 0,
++          precio_unitario: g.cantidad > 0 ? (g.subtotal / g.cantidad) * factor : 0,
++          unidad: g.producto_id ? unidadPorProducto.get(g.producto_id) ?? "unidad" : "unidad",
+         };
+       });
+       setItems(filas);
+@@ -162,7 +192,7 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+     return items.reduce((s, it) => {
+       const key = it.producto_id ?? it.nombre_producto;
+       const cant = cantidades[key] ?? 0;
+-      return s + cant * it.precio_unitario;
++      return s + centavos(cant * it.precio_unitario);
+     }, 0);
+   }, [items, cantidades]);
+ 
+@@ -317,20 +347,30 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+                           {it.nombre_producto}
+                         </div>
+                         <div className="text-[11px] text-vt-text3">
+-                          Disponible para devolver: {it.disponible} · {formatMoney(it.precio_unitario)} c/u
++                          {it.producto_id
++                            ? `Disponible para devolver: ${it.disponible} · ${formatMoney(it.precio_unitario)} c/u (lo que pagó)`
++                            : "Venta rápida: no es del inventario, no se devuelve aquí"}
+                         </div>
+                       </div>
+                       <input
+                         type="number"
+                         min={0}
+                         max={it.disponible}
+-                        step="1"
++                        step={it.unidad.trim().toLowerCase() === "unidad" ? "1" : "0.001"}
+                         disabled={it.disponible <= 0}
+                         value={cantidades[key] ?? ""}
+                         onChange={(e) =>
+                           setCantidades((prev) => ({
+                             ...prev,
+-                            [key]: Math.min(it.disponible, Math.max(0, Number(e.target.value) || 0)),
++                            [key]: Math.min(
++                              it.disponible,
++                              Math.max(
++                                0,
++                                it.unidad.trim().toLowerCase() === "unidad"
++                                  ? Math.floor(Number(e.target.value) || 0)
++                                  : Math.round((Number(e.target.value) || 0) * 1000) / 1000
++                              )
++                            ),
+                           }))
+                         }
+                         placeholder="0"
+@@ -388,7 +428,7 @@ export function DevolucionWizard({ onRegistrada }: { onRegistrada: () => void })
+                       <span className="text-neutral-900 dark:text-white">
+                         {cant} × {it.nombre_producto}
+                       </span>
+-                      <span className="font-mono text-vt-text2">{formatMoney(cant * it.precio_unitario)}</span>
++                      <span className="font-mono text-vt-text2">{formatMoney(centavos(cant * it.precio_unitario))}</span>
+                     </div>
+                   );
+                 })}
+diff --git a/src/components/inventario/NuevaCompraModal.tsx b/src/components/inventario/NuevaCompraModal.tsx
+index d870741..91ac521 100644
+--- a/src/components/inventario/NuevaCompraModal.tsx
++++ b/src/components/inventario/NuevaCompraModal.tsx
+@@ -6,6 +6,7 @@ import { X, ScanLine, ShoppingCart, Trash2 } from "lucide-react";
+ import type { ProductoInventario, Proveedor } from "@/lib/inventario/types";
+ import { registrarCompraAction, type CompraItemInput } from "@/app/actions/inventario-actions";
+ import { formatMoney } from "@/lib/money";
++import { centavos } from "@/lib/pagos";
+ import { reproducirBeep } from "@/lib/pos/beep";
+ 
+ type Linea = { producto_id: string; nombre: string; cantidad: number; precio_unitario: number };
+@@ -80,17 +81,21 @@ export function NuevaCompraModal({
+   }
+ 
+   function actualizar(id: string, campo: "cantidad" | "precio_unitario", valor: number) {
+-    setLineas((prev) => prev.map((l) => (l.producto_id === id ? { ...l, [campo]: valor } : l)));
++    // Nunca negativos: una cantidad negativa le restaba inventario a la compra.
++    const limpio = Number.isFinite(valor) ? Math.max(0, valor) : 0;
++    const v = campo === "cantidad" ? Math.round(limpio * 1000) / 1000 : centavos(limpio);
++    setLineas((prev) => prev.map((l) => (l.producto_id === id ? { ...l, [campo]: v } : l)));
+   }
+ 
+   function quitar(id: string) {
+     setLineas((prev) => prev.filter((l) => l.producto_id !== id));
+   }
+ 
+-  const total = lineas.reduce((s, l) => s + l.cantidad * l.precio_unitario, 0);
++  const total = centavos(lineas.reduce((s, l) => s + centavos(l.cantidad * l.precio_unitario), 0));
+ 
+   function confirmar() {
+     if (lineas.length === 0) return setError("Agrega al menos un producto");
++    if (lineas.some((l) => !(l.cantidad > 0))) return setError("Cada producto debe tener una cantidad mayor que cero");
+     const items: CompraItemInput[] = lineas.map((l) => ({
+       producto_id: l.producto_id,
+       cantidad: l.cantidad,
+@@ -222,7 +227,7 @@ export function NuevaCompraModal({
+                       />
+                     </td>
+                     <td className="px-3 py-2 font-mono font-semibold">
+-                      {formatMoney(l.cantidad * l.precio_unitario)}
++                      {formatMoney(centavos(l.cantidad * l.precio_unitario))}
+                     </td>
+                     <td className="px-3 py-2">
+                       <button onClick={() => quitar(l.producto_id)} className="text-vt-text3 hover:text-vt-red">
 diff --git a/src/components/pos/BotonCopiaFactura.tsx b/src/components/pos/BotonCopiaFactura.tsx
 index 45b2361..e27ef33 100644
 --- a/src/components/pos/BotonCopiaFactura.tsx
@@ -1535,7 +1812,7 @@ index 12bf428..724846e 100644
        )}
      </div>
 diff --git a/src/components/pos/POSClient.tsx b/src/components/pos/POSClient.tsx
-index 8c775e8..712723d 100644
+index 8c775e8..794a27d 100644
 --- a/src/components/pos/POSClient.tsx
 +++ b/src/components/pos/POSClient.tsx
 @@ -1,14 +1,18 @@
@@ -1548,7 +1825,7 @@ index 8c775e8..712723d 100644
  import type { UsuarioProfile } from "@/lib/auth";
 -import type { Cliente, Producto, CartLine, MetodoPago } from "@/lib/pos/types";
 +import type { Cliente, Producto, CartLine } from "@/lib/pos/types";
-+import { lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
++import { centavos, lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
 +import type { CajaSesion } from "@/lib/caja/queries";
 +import type { CajaAbiertaPOS } from "@/lib/pos/queries";
  import { precioEfectivo, esUnidadEntera } from "@/lib/pos/types";
@@ -1582,7 +1859,34 @@ index 8c775e8..712723d 100644
  
  export function POSClient({
    usuario,
-@@ -240,7 +238,39 @@ export function POSClient({
+@@ -98,8 +96,11 @@ export function POSClient({
+ 
+   const cajaAbierta = Boolean(cajaInicial);
+ 
++  // Cada línea se redondea a centavos, igual que la guarda la factura: con
++  // productos por peso (0.333 lb × RD$45 = 14.985) el POS mostraba un total
++  // distinto por centavos al de la factura.
+   const subtotal = useMemo(
+-    () => carrito.reduce((s, i) => s + i.precio * i.cantidad, 0),
++    () => centavos(carrito.reduce((s, i) => s + centavos(i.precio * i.cantidad), 0)),
+     [carrito]
+   );
+   const cuponDescuento = useMemo(() => {
+@@ -110,8 +111,11 @@ export function POSClient({
+         : cuponAplicado.valor;
+     return Math.min(calculado, subtotal);
+   }, [cuponAplicado, subtotal]);
+-  const descuentoTotal = descuento + cuponDescuento;
+-  const total = Math.max(subtotal - descuentoTotal, 0);
++  // El descuento manual nunca puede pasar de lo que queda después del cupón:
++  // antes se mandaba a la factura un descuento mayor que la venta.
++  const descuentoManual = centavos(Math.min(Math.max(descuento, 0), Math.max(subtotal - cuponDescuento, 0)));
++  const descuentoTotal = centavos(descuentoManual + cuponDescuento);
++  const total = centavos(Math.max(subtotal - descuentoTotal, 0));
+ 
+   async function aplicarCupon(codigo: string): Promise<string | null> {
+     const res = await aplicarCuponAction(codigo, subtotal);
+@@ -240,7 +244,39 @@ export function POSClient({
      setCarrito((prev) => prev.filter((i) => i.key !== key));
    }
  
@@ -1622,7 +1926,7 @@ index 8c775e8..712723d 100644
      setCarrito([]);
      setDescuento(0);
      setCuponAplicado(null);
-@@ -340,12 +370,26 @@ export function POSClient({
+@@ -340,12 +376,26 @@ export function POSClient({
      setVentasAparcadas((prev) => prev.filter((v) => v.id !== id));
    }
  
@@ -1651,7 +1955,7 @@ index 8c775e8..712723d 100644
      const items: ItemVentaInput[] = carrito.map((i) => ({
        producto_id: i.producto_id,
        nombre: i.producto_id ? undefined : i.nombre,
-@@ -363,6 +407,7 @@ export function POSClient({
+@@ -363,6 +413,7 @@ export function POSClient({
          descuento: number;
          total: number;
          items: { nombre: string; cantidad: number; subtotal: number }[];
@@ -1659,7 +1963,7 @@ index 8c775e8..712723d 100644
        }
      ) {
        // Si el servidor confirmó los montos finales (pueden diferir de lo que
-@@ -370,10 +415,20 @@ export function POSClient({
+@@ -370,10 +421,20 @@ export function POSClient({
        // cobrar), el ticket se imprime con esos valores, no con el carrito
        // local. En modo offline no hay confirmación todavía: se usa el
        // carrito local y ya, sin retrasar la venta ni pedir nada al cajero.
@@ -1684,7 +1988,7 @@ index 8c775e8..712723d 100644
        imprimirFactura({
          negocioNombre,
          numeroFactura,
-@@ -381,7 +436,11 @@ export function POSClient({
+@@ -381,18 +442,22 @@ export function POSClient({
          fecha,
          cajero: usuario.nombre,
          cliente: clienteNombre,
@@ -1697,7 +2001,11 @@ index 8c775e8..712723d 100644
          items:
            confirmado?.items ??
            carrito.map((i) => ({
-@@ -392,7 +451,7 @@ export function POSClient({
+             nombre: i.nombre,
+             cantidad: i.cantidad,
+-            subtotal: i.precio * i.cantidad,
++            subtotal: centavos(i.precio * i.cantidad),
+           })),
          subtotal: confirmado?.subtotal ?? subtotal,
          descuento: confirmado?.descuento ?? descuentoTotal,
          total: confirmado?.total ?? total,
@@ -1706,7 +2014,7 @@ index 8c775e8..712723d 100644
          cambio: cambioImpreso,
        }).catch(() => {});
      }
-@@ -407,6 +466,8 @@ export function POSClient({
+@@ -407,6 +472,8 @@ export function POSClient({
          clienteId: cliente?.id ?? null,
          clienteNombre,
          metodoPago: metodo,
@@ -1715,7 +2023,7 @@ index 8c775e8..712723d 100644
          descuento: descuentoTotal,
          subtotal,
          total,
-@@ -434,6 +495,8 @@ export function POSClient({
+@@ -434,9 +501,11 @@ export function POSClient({
          items,
          clienteId: cliente?.id ?? null,
          metodoPago: metodo,
@@ -1723,8 +2031,12 @@ index 8c775e8..712723d 100644
 +        pagos: pago.pagos,
          // Solo el descuento manual: si hay cupón, el servidor recalcula su
          // monto internamente en vez de confiar en lo que mande el navegador.
-         descuento,
-@@ -450,7 +513,7 @@ export function POSClient({
+-        descuento,
++        descuento: descuentoManual,
+         ncfTipo,
+         cuponId: cuponAplicado?.cuponId ?? null,
+         localId: ventaLocalId,
+@@ -450,7 +519,7 @@ export function POSClient({
            res.fecha,
            res.ncf,
            res.subtotal !== undefined && res.descuento !== undefined && res.total !== undefined && res.items
@@ -1733,7 +2045,7 @@ index 8c775e8..712723d 100644
              : undefined
          );
        }
-@@ -459,7 +522,7 @@ export function POSClient({
+@@ -459,7 +528,7 @@ export function POSClient({
        limpiarCarrito();
        setPagoAbierto(false);
        router.refresh();
@@ -1742,7 +2054,7 @@ index 8c775e8..712723d 100644
      } catch {
        // El navegador decía "en línea" pero la petición no llegó (wifi sin
        // internet, red inestable, etc.): se cobra igual y se guarda para
-@@ -477,7 +540,7 @@ export function POSClient({
+@@ -477,7 +546,7 @@ export function POSClient({
        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
          <POSTopBar
            cajaAbierta={cajaAbierta}
@@ -1751,7 +2063,7 @@ index 8c775e8..712723d 100644
            onPrinterClick={() => setImpresoraAbierta(true)}
          />
  
-@@ -645,13 +708,12 @@ export function POSClient({
+@@ -645,13 +714,12 @@ export function POSClient({
          <CajaModal
            mode={cajaModal}
            cuadre={
@@ -2759,7 +3071,7 @@ index 165784d..3eb9f19 100644
          </table>
  
 diff --git a/src/lib/clientes/queries.ts b/src/lib/clientes/queries.ts
-index 390ce2a..b7c7a28 100644
+index 390ce2a..178e959 100644
 --- a/src/lib/clientes/queries.ts
 +++ b/src/lib/clientes/queries.ts
 @@ -1,5 +1,6 @@
@@ -2791,20 +3103,35 @@ index 390ce2a..b7c7a28 100644
  
    return (data ?? []).map((c) => ({
      id: c.id,
-@@ -48,8 +58,10 @@ export async function getClientesStats(): Promise<ClientesStats> {
+@@ -47,34 +57,39 @@ export async function getClientesStats(): Promise<ClientesStats> {
+   const supabase = await createClient();
    const hoyInicio = inicioDiaRD(hoyRD());
  
-   const [{ data: clientes }, { data: abonosHoy }] = await Promise.all([
+-  const [{ data: clientes }, { data: abonosHoy }] = await Promise.all([
 -    supabase.from("clientes").select("saldo_deuda").eq("activo", true),
 -    supabase.from("abonos").select("monto").gte("fecha", hoyInicio),
++  const [{ data: clientes }, { data: abonosHoy }, { data: deudas }] = await Promise.all([
 +    traerTodas((a, b) =>
-+      supabase.from("clientes").select("saldo_deuda").eq("activo", true).order("id").range(a, b)
++      supabase.from("clientes").select("id").eq("activo", true).order("id").range(a, b)
 +    ),
 +    traerTodas((a, b) => supabase.from("abonos").select("monto").gte("fecha", hoyInicio).order("id").range(a, b)),
++    // Mismo cálculo que Fiado y el dashboard: deudas pendientes o parciales.
++    traerTodas((a, b) =>
++      supabase.from("deudas").select("cliente_id, saldo").in("estado", ["pendiente", "parcial"]).order("id").range(a, b)
++    ),
    ]);
  
    const rows = clientes ?? [];
-@@ -63,18 +75,17 @@ export async function getClientesStats(): Promise<ClientesStats> {
+   return {
+     total_clientes: rows.length,
+-    con_deuda: rows.filter((c) => Number(c.saldo_deuda) > 0).length,
+-    total_deuda: rows.reduce((s, c) => s + Number(c.saldo_deuda), 0),
+-    abonos_hoy: (abonosHoy ?? []).reduce((s, a) => s + Number(a.monto), 0),
++    con_deuda: new Set((deudas ?? []).map((d) => d.cliente_id)).size,
++    total_deuda: Math.round((deudas ?? []).reduce((s, d) => s + Number(d.saldo), 0) * 100) / 100,
++    abonos_hoy: Math.round((abonosHoy ?? []).reduce((s, a) => s + Number(a.monto), 0) * 100) / 100,
+   };
+ }
  
  export async function getDeudas(estado: "pendiente" | "pagada" | "todas" = "pendiente"): Promise<Deuda[]> {
    const supabase = await createClient();
@@ -2834,7 +3161,7 @@ index 390ce2a..b7c7a28 100644
  
    return (data ?? []).map((d) => ({
      id: d.id,
-@@ -94,10 +105,14 @@ export async function getDeudas(estado: "pendiente" | "pagada" | "todas" = "pend
+@@ -94,15 +109,19 @@ export async function getDeudas(estado: "pendiente" | "pagada" | "todas" = "pend
  
  export async function getFiadoResumen(): Promise<FiadoResumen> {
    const supabase = await createClient();
@@ -2853,7 +3180,13 @@ index 390ce2a..b7c7a28 100644
  
    const rows = data ?? [];
    return {
-@@ -121,12 +136,16 @@ export async function getTopDeudores(limit = 5): Promise<{ nombre: string; saldo
+     clientes_con_deuda: new Set(rows.map((r) => r.cliente_id)).size,
+-    total_pendiente: rows.reduce((s, r) => s + Number(r.saldo), 0),
++    total_pendiente: Math.round(rows.reduce((s, r) => s + Number(r.saldo), 0) * 100) / 100,
+     total_deudas: rows.length,
+   };
+ }
+@@ -121,12 +140,16 @@ export async function getTopDeudores(limit = 5): Promise<{ nombre: string; saldo
  export async function getAbonosDelDia(fecha: string): Promise<{ abonos: Abono[]; total: number }> {
    const supabase = await createClient();
    const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
@@ -3064,7 +3397,7 @@ index 5dac4cc..fcaaae2 100644
    ingresosReales: number;
    utilidad: number;
 diff --git a/src/lib/dashboard/queries.ts b/src/lib/dashboard/queries.ts
-index e2d22ba..cbcc249 100644
+index e2d22ba..3be40e9 100644
 --- a/src/lib/dashboard/queries.ts
 +++ b/src/lib/dashboard/queries.ts
 @@ -1,6 +1,9 @@
@@ -3102,7 +3435,7 @@ index e2d22ba..cbcc249 100644
    ingresosMesAnteriorTotal: number;
    deudasPendientesTotal: number;
    clientesConDeuda: number;
-@@ -92,66 +108,52 @@ async function getTurnos(supabase: SupabaseServer) {
+@@ -92,68 +108,62 @@ async function getTurnos(supabase: SupabaseServer) {
    return { actual, anterior };
  }
  
@@ -3175,8 +3508,15 @@ index e2d22ba..cbcc249 100644
 +    rangoAyer ? resumenVentas(supabase, rangoAyer) : Promise.resolve(SIN_VENTAS),
 +    resumenVentas(supabase, { desde: inicioDeMesISO(), hasta: null }),
 +    resumenVentas(supabase, { desde: inicioDeMesAnteriorISO(), hasta: inicioDeMesISO() }),
++    // Deudas pendientes desde las deudas mismas (igual que la pantalla de
++    // Fiado), no desde el saldo guardado en cada cliente, que podía diferir.
 +    traerTodas((a, b) =>
-+      supabase.from("clientes").select("saldo_deuda").gt("saldo_deuda", 0).order("id").range(a, b)
++      supabase
++        .from("deudas")
++        .select("cliente_id, saldo")
++        .in("estado", ["pendiente", "parcial"])
++        .order("id")
++        .range(a, b)
 +    ),
 +    traerTodas((a, b) =>
 +      supabase.from("productos").select("id, stock, stock_minimo").eq("activo", true).order("id").range(a, b)
@@ -3200,9 +3540,13 @@ index e2d22ba..cbcc249 100644
 -  const ingresosMesAnteriorTotal = (ventasMesAnterior.data ?? []).reduce((s, v) => s + Number(v.total), 0);
 -
    const deudaRows = clientes.data ?? [];
-   const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
+-  const deudasPendientesTotal = deudaRows.reduce((s, c) => s + Number(c.saldo_deuda), 0);
++  const deudasPendientesTotal = centavos(deudaRows.reduce((s, d) => s + Number(d.saldo), 0));
++  const clientesConDeuda = new Set(deudaRows.map((d) => d.cliente_id)).size;
  
-@@ -163,18 +165,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+   const productosRows = productos.data ?? [];
+   const productosAgotados = productosRows.filter((p) => Number(p.stock) <= 0).length;
+@@ -163,18 +173,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  
    return {
      turno,
@@ -3227,7 +3571,8 @@ index e2d22ba..cbcc249 100644
 +    ventasMesDevoluciones: mes.devuelto,
 +    ingresosMesAnteriorTotal: mesAnterior.neto,
      deudasPendientesTotal,
-     clientesConDeuda: deudaRows.length,
+-    clientesConDeuda: deudaRows.length,
++    clientesConDeuda,
      productosBajos: productosAgotados + productosStockBajoNoAgotados,
      productosAgotados,
      productosStockBajoNoAgotados,
@@ -3236,7 +3581,7 @@ index e2d22ba..cbcc249 100644
      clientesAtendidosHoy,
    };
  }
-@@ -182,23 +193,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
+@@ -182,23 +201,32 @@ export async function getDashboardStats(): Promise<DashboardStats> {
  export async function getVentasUltimosDias(dias: number): Promise<VentaDia[]> {
    const supabase = await createClient();
    const desde = sumarDias(hoyRD(), -(dias - 1));
@@ -3278,7 +3623,7 @@ index e2d22ba..cbcc249 100644
  }
  
  export async function getUltimasVentas(limit = 8): Promise<UltimaVenta[]> {
-@@ -227,40 +247,43 @@ const MESES_CORTOS = [
+@@ -227,40 +255,43 @@ const MESES_CORTOS = [
  
  export async function getComparativaAnual(): Promise<MesComparativo[]> {
    const supabase = await createClient();
@@ -3427,7 +3772,7 @@ index ec4f4c1..5073452 100644
  
  /** Hoy (YYYY-MM-DD) en hora de RD, sin importar la zona del servidor o del navegador. */
 diff --git a/src/lib/inventario/queries.ts b/src/lib/inventario/queries.ts
-index 828cfd4..ea16e7e 100644
+index 828cfd4..ad6513d 100644
 --- a/src/lib/inventario/queries.ts
 +++ b/src/lib/inventario/queries.ts
 @@ -1,5 +1,6 @@
@@ -3437,7 +3782,7 @@ index 828cfd4..ea16e7e 100644
  import type {
    ProductoInventario,
    Categoria,
-@@ -55,28 +56,31 @@ function mapProducto(p: ProductoRow): ProductoInventario {
+@@ -55,35 +56,40 @@ function mapProducto(p: ProductoRow): ProductoInventario {
  const PRODUCTO_SELECT =
    "id, codigo_barras, nombre, descripcion, categoria_id, proveedor_id, precio_compra, precio_venta, precio_mayoreo, cantidad_mayoreo, stock, stock_minimo, unidad, aplica_itbis, activo, created_at, categorias(nombre), proveedores(nombre)";
  
@@ -3484,7 +3829,17 @@ index 828cfd4..ea16e7e 100644
  
    const rows = data ?? [];
    const stock_bajo = rows.filter(
-@@ -121,13 +125,17 @@ export async function getProveedores(): Promise<Proveedor[]> {
+     (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.stock_minimo)
+   ).length;
+   const sin_stock = rows.filter((p) => Number(p.stock) <= 0).length;
+-  const valor_costo = rows.reduce((s, p) => s + Number(p.precio_compra) * Number(p.stock), 0);
++  // Un producto con existencia negativa (vendido de más) no resta valor al inventario.
++  const valor_costo =
++    Math.round(rows.reduce((s, p) => s + Number(p.precio_compra) * Math.max(0, Number(p.stock)), 0) * 100) / 100;
+ 
+   return {
+     total_productos: rows.length,
+@@ -121,13 +127,17 @@ export async function getProveedores(): Promise<Proveedor[]> {
  
  export async function getCompras(): Promise<Compra[]> {
    const supabase = await createClient();

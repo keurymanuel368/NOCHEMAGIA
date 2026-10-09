@@ -57,19 +57,23 @@ export async function getClientesStats(): Promise<ClientesStats> {
   const supabase = await createClient();
   const hoyInicio = inicioDiaRD(hoyRD());
 
-  const [{ data: clientes }, { data: abonosHoy }] = await Promise.all([
+  const [{ data: clientes }, { data: abonosHoy }, { data: deudas }] = await Promise.all([
     traerTodas((a, b) =>
-      supabase.from("clientes").select("saldo_deuda").eq("activo", true).order("id").range(a, b)
+      supabase.from("clientes").select("id").eq("activo", true).order("id").range(a, b)
     ),
     traerTodas((a, b) => supabase.from("abonos").select("monto").gte("fecha", hoyInicio).order("id").range(a, b)),
+    // Mismo cálculo que Fiado y el dashboard: deudas pendientes o parciales.
+    traerTodas((a, b) =>
+      supabase.from("deudas").select("cliente_id, saldo").in("estado", ["pendiente", "parcial"]).order("id").range(a, b)
+    ),
   ]);
 
   const rows = clientes ?? [];
   return {
     total_clientes: rows.length,
-    con_deuda: rows.filter((c) => Number(c.saldo_deuda) > 0).length,
-    total_deuda: rows.reduce((s, c) => s + Number(c.saldo_deuda), 0),
-    abonos_hoy: (abonosHoy ?? []).reduce((s, a) => s + Number(a.monto), 0),
+    con_deuda: new Set((deudas ?? []).map((d) => d.cliente_id)).size,
+    total_deuda: Math.round((deudas ?? []).reduce((s, d) => s + Number(d.saldo), 0) * 100) / 100,
+    abonos_hoy: Math.round((abonosHoy ?? []).reduce((s, a) => s + Number(a.monto), 0) * 100) / 100,
   };
 }
 
@@ -117,7 +121,7 @@ export async function getFiadoResumen(): Promise<FiadoResumen> {
   const rows = data ?? [];
   return {
     clientes_con_deuda: new Set(rows.map((r) => r.cliente_id)).size,
-    total_pendiente: rows.reduce((s, r) => s + Number(r.saldo), 0),
+    total_pendiente: Math.round(rows.reduce((s, r) => s + Number(r.saldo), 0) * 100) / 100,
     total_deudas: rows.length,
   };
 }

@@ -87,7 +87,9 @@ export async function getInventarioStats(): Promise<InventarioStats> {
     (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.stock_minimo)
   ).length;
   const sin_stock = rows.filter((p) => Number(p.stock) <= 0).length;
-  const valor_costo = rows.reduce((s, p) => s + Number(p.precio_compra) * Number(p.stock), 0);
+  // Un producto con existencia negativa (vendido de más) no resta valor al inventario.
+  const valor_costo =
+    Math.round(rows.reduce((s, p) => s + Number(p.precio_compra) * Math.max(0, Number(p.stock)), 0) * 100) / 100;
 
   return {
     total_productos: rows.length,
