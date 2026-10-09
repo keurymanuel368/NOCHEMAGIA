@@ -1,3 +1,128 @@
+diff --git a/anular-facturas.sql b/anular-facturas.sql
+new file mode 100644
+index 0000000..8a730ff
+--- /dev/null
++++ b/anular-facturas.sql
+@@ -0,0 +1,119 @@
++-- ============================================================
++-- VentaTech: anular facturas (con registro de quién, cuándo y por qué)
++-- Pegar en Supabase > SQL Editor > Run (una sola vez; se puede repetir).
++-- ============================================================
++
++-- 1) Registro de anulaciones. La factura NO se borra: queda "anulada" y aquí
++--    se guarda quién la anuló, cuándo, por qué y si fue desde modo soporte.
++create table if not exists public.ventas_anuladas (
++  id uuid primary key default gen_random_uuid(),
++  venta_id uuid not null unique references public.ventas(id) on delete cascade,
++  numero_factura text,
++  total numeric(12, 2),
++  motivo text not null,
++  anulada_por uuid,
++  anulada_por_nombre text,
++  en_modo_soporte boolean not null default false,
++  anulada_at timestamptz not null default now()
++);
++
++alter table public.ventas_anuladas enable row level security;
++drop policy if exists ventas_anuladas_select on public.ventas_anuladas;
++create policy ventas_anuladas_select on public.ventas_anuladas
++  for select to authenticated
++  using (exists (select 1 from public.ventas v where v.id = ventas_anuladas.venta_id));
++revoke insert, update, delete on public.ventas_anuladas from anon, authenticated;
++grant select on public.ventas_anuladas to authenticated;
++grant all on public.ventas_anuladas to service_role;
++
++-- 2) Permitir el estado 'anulada' en ventas (si hay una regla CHECK que lo impida).
++do $$
++declare
++  r record;
++  valores text;
++begin
++  for r in
++    select conname, pg_get_constraintdef(oid) as def
++    from pg_constraint
++    where conrelid = 'public.ventas'::regclass and contype = 'c'
++      and pg_get_constraintdef(oid) ilike '%estado%'
++      and pg_get_constraintdef(oid) not ilike '%anulada%'
++  loop
++    execute format('alter table public.ventas drop constraint %I', r.conname);
++    select string_agg(quote_literal(e), ', ') into valores from (
++      select distinct estado as e from public.ventas where estado is not null
++      union select unnest(array['completada', 'anulada', 'devuelta'])) x;
++    execute format('alter table public.ventas add constraint ventas_estado_check check (estado in (%s)) not valid', valores);
++  end loop;
++end $$;
++
++-- 3) Anular una factura, todo o nada:
++--    - devuelve los productos al inventario,
++--    - quita la deuda si fue a fiado y recalcula el saldo del cliente,
++--    - marca la venta como 'anulada' (sale de caja, dashboard y reportes),
++--    - deja el registro en ventas_anuladas.
++--    Solo la puede llamar el servidor (que ya comprobó los permisos).
++create or replace function public.anular_venta(
++  p_venta_id uuid,
++  p_motivo text,
++  p_usuario_id uuid,
++  p_usuario_nombre text,
++  p_modo_soporte boolean
++) returns json
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v record;
++begin
++  if coalesce(trim(p_motivo), '') = '' then
++    raise exception 'Escribe el motivo de la anulación';
++  end if;
++
++  select id, numero_factura, total, estado, cliente_id into v
++  from ventas where id = p_venta_id for update;
++  if not found then
++    raise exception 'La factura no existe';
++  end if;
++  if v.estado <> 'completada' then
++    raise exception 'Esta factura ya está %', v.estado;
++  end if;
++
++  if exists (select 1 from devoluciones where venta_id = p_venta_id) then
++    raise exception 'Esta factura tiene devoluciones registradas; no se puede anular desde aquí';
++  end if;
++  if exists (select 1 from deudas where venta_id = p_venta_id and coalesce(monto_pagado, 0) > 0) then
++    raise exception 'Esta factura a fiado ya tiene abonos; no se puede anular desde aquí';
++  end if;
++
++  -- Devolver al inventario lo que se vendió
++  update productos p
++     set stock = p.stock + i.cantidad
++    from (select producto_id, sum(cantidad) as cantidad
++            from venta_items
++           where venta_id = p_venta_id and producto_id is not null
++           group by producto_id) i
++   where p.id = i.producto_id;
++
++  -- Quitar la deuda (fiado sin abonos) y recalcular el saldo del cliente
++  delete from deudas where venta_id = p_venta_id;
++  if v.cliente_id is not null then
++    update clientes c
++       set saldo_deuda = coalesce((select sum(d.saldo) from deudas d
++                                    where d.cliente_id = v.cliente_id
++                                      and d.estado in ('pendiente', 'parcial')), 0)
++     where c.id = v.cliente_id;
++  end if;
++
++  update ventas set estado = 'anulada' where id = p_venta_id;
++
++  insert into ventas_anuladas (venta_id, numero_factura, total, motivo, anulada_por, anulada_por_nombre, en_modo_soporte)
++  values (p_venta_id, v.numero_factura, v.total, trim(p_motivo), p_usuario_id, p_usuario_nombre, coalesce(p_modo_soporte, false));
++
++  return json_build_object('numero_factura', v.numero_factura, 'total', v.total);
++end;
++$$;
++
++revoke all on function public.anular_venta(uuid, text, uuid, text, boolean) from public, anon, authenticated;
++grant execute on function public.anular_venta(uuid, text, uuid, text, boolean) to service_role;
 diff --git a/pagos-mixtos.sql b/pagos-mixtos.sql
 new file mode 100644
 index 0000000..0009a9f
@@ -69,15 +194,17 @@ index 0000000..0009a9f
 +  end if;
 +end $$;
 diff --git a/src/app/actions/pos-actions.ts b/src/app/actions/pos-actions.ts
-index b88225f..851d1bb 100644
+index b88225f..90032f1 100644
 --- a/src/app/actions/pos-actions.ts
 +++ b/src/app/actions/pos-actions.ts
-@@ -2,15 +2,25 @@
+@@ -2,15 +2,27 @@
  
  import { revalidatePath } from "next/cache";
  import { createClient } from "@/lib/supabase/server";
 +import { createAdminClient } from "@/lib/supabase/admin";
 +import { getCuadreCajaAbierta } from "@/lib/pos/queries";
++import { getUsuarioActual } from "@/lib/get-usuario-actual";
++import { esModoSoporteSuperAdmin } from "@/lib/modo-soporte";
  import type { MetodoPago, CartLine } from "@/lib/pos/types";
 +import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
  
@@ -98,7 +225,7 @@ index b88225f..851d1bb 100644
    return { success: "Caja abierta" };
  }
  
-@@ -19,6 +29,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
+@@ -19,6 +31,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
    const { error } = await supabase.rpc("cerrar_caja", { p_monto_final: montoFinal });
    if (error) return { error: error.message };
    revalidatePath("/pos");
@@ -107,7 +234,7 @@ index b88225f..851d1bb 100644
    return { success: "Caja cerrada" };
  }
  
-@@ -29,6 +41,68 @@ export type ItemVentaInput = {
+@@ -29,6 +43,68 @@ export type ItemVentaInput = {
    cantidad: number;
  };
  
@@ -176,7 +303,7 @@ index b88225f..851d1bb 100644
  export async function registrarVentaAction(input: {
    items: ItemVentaInput[];
    clienteId: string | null;
-@@ -37,6 +111,10 @@ export async function registrarVentaAction(input: {
+@@ -37,6 +113,10 @@ export async function registrarVentaAction(input: {
    ncfTipo?: string | null;
    cuponId?: string | null;
    localId?: string | null;
@@ -187,7 +314,7 @@ index b88225f..851d1bb 100644
  }): Promise<
    PosActionState & {
      ventaId?: string;
-@@ -47,21 +125,50 @@ export async function registrarVentaAction(input: {
+@@ -47,21 +127,50 @@ export async function registrarVentaAction(input: {
      descuento?: number;
      total?: number;
      items?: { nombre: string; cantidad: number; subtotal: number }[];
@@ -241,7 +368,7 @@ index b88225f..851d1bb 100644
  
    const [{ data: venta }, { data: items }] = await Promise.all([
      supabase
-@@ -75,8 +182,26 @@ export async function registrarVentaAction(input: {
+@@ -75,8 +184,26 @@ export async function registrarVentaAction(input: {
        .eq("venta_id", ventaId),
    ]);
  
@@ -269,7 +396,7 @@ index b88225f..851d1bb 100644
    return {
      success: "Venta registrada",
      ventaId,
-@@ -91,6 +216,8 @@ export async function registrarVentaAction(input: {
+@@ -91,6 +218,8 @@ export async function registrarVentaAction(input: {
        cantidad: Number(i.cantidad),
        subtotal: Number(i.subtotal),
      })),
@@ -278,6 +405,68 @@ index b88225f..851d1bb 100644
    };
  }
  
+@@ -170,3 +299,61 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
+   revalidatePath("/pos");
+   return { success: "Venta aparcada eliminada" };
+ }
++
++// ============================================================
++// Anular factura (por ejemplo, una cobrada dos veces). La factura no se
++// borra: queda "anulada", sale de caja, dashboard y reportes, los productos
++// vuelven al inventario y queda registrado quién la anuló, cuándo y por qué.
++// Pueden hacerlo el administrador del negocio y el super admin en modo soporte.
++// ============================================================
++
++export async function puedeAnularFacturasAction(): Promise<boolean> {
++  const usuario = await getUsuarioActual();
++  if (!usuario) return false;
++  return usuario.es_admin || usuario.es_super_admin || (await esModoSoporteSuperAdmin(usuario.id));
++}
++
++export async function anularVentaAction(ventaId: string, motivo: string): Promise<PosActionState> {
++  const usuario = await getUsuarioActual();
++  if (!usuario) return { error: "Sesión no válida" };
++  const modoSoporte = await esModoSoporteSuperAdmin(usuario.id);
++  if (!usuario.es_admin && !usuario.es_super_admin && !modoSoporte) {
++    return { error: "Solo el administrador puede anular facturas" };
++  }
++  const motivoLimpio = motivo.trim();
++  if (motivoLimpio.length < 3) return { error: "Escribe el motivo de la anulación" };
++
++  // La factura tiene que ser de este negocio: se busca con la sesión del
++  // usuario (las reglas de seguridad solo le muestran las de su empresa).
++  const supabase = await createClient();
++  const { data: venta } = await supabase.from("ventas").select("id, estado").eq("id", ventaId).maybeSingle();
++  if (!venta) return { error: "No se encontró la factura" };
++  if (venta.estado !== "completada") return { error: `Esta factura ya está ${venta.estado}` };
++
++  try {
++    const admin = createAdminClient();
++    const { error } = await admin.rpc("anular_venta", {
++      p_venta_id: ventaId,
++      p_motivo: motivoLimpio,
++      p_usuario_id: usuario.id,
++      p_usuario_nombre: modoSoporte ? `${usuario.nombre} (soporte VentaTech)` : usuario.nombre,
++      p_modo_soporte: modoSoporte,
++    });
++    if (error) {
++      return {
++        error: error.message.includes("anular_venta")
++          ? "Falta ejecutar el SQL anular-facturas.sql en Supabase"
++          : error.message,
++      };
++    }
++  } catch (e) {
++    return { error: e instanceof Error ? e.message : "No se pudo anular la factura" };
++  }
++
++  revalidatePath("/");
++  revalidatePath("/caja");
++  revalidatePath("/inventario");
++  revalidatePath("/clientes");
++  revalidatePath("/fiado");
++  return { success: "Factura anulada" };
++}
 diff --git a/src/app/actions/reportes-actions.ts b/src/app/actions/reportes-actions.ts
 index 2d1f696..da5d2d4 100644
 --- a/src/app/actions/reportes-actions.ts
@@ -999,7 +1188,7 @@ index 0bd1fd2..60afc15 100644
          <div className="relative">
            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-neutral-400">
 diff --git a/src/components/pos/HistorialTab.tsx b/src/components/pos/HistorialTab.tsx
-index 12bf428..adc0107 100644
+index 12bf428..724846e 100644
 --- a/src/components/pos/HistorialTab.tsx
 +++ b/src/components/pos/HistorialTab.tsx
 @@ -2,15 +2,18 @@
@@ -1029,7 +1218,15 @@ index 12bf428..adc0107 100644
  };
  
  function hoyISO() {
-@@ -41,12 +45,39 @@ export function HistorialTab() {
+@@ -33,6 +37,7 @@ export function HistorialTab() {
+   const [ventas, setVentas] = useState<HistorialItem[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [ventaSeleccionada, setVentaSeleccionada] = useState<string | null>(null);
++  const [recarga, setRecarga] = useState(0);
+ 
+   useEffect(() => {
+     let cancelado = false;
+@@ -41,12 +46,39 @@ export function HistorialTab() {
  
      (async () => {
        const { desdeISO: desde, hastaISO: hasta } = rangoDiasRD(fecha, fecha);
@@ -1075,7 +1272,7 @@ index 12bf428..adc0107 100644
  
        if (cancelado) return;
        setVentas(
-@@ -55,6 +86,7 @@ export function HistorialTab() {
+@@ -55,6 +87,7 @@ export function HistorialTab() {
            numero_factura: v.numero_factura,
            total: Number(v.total),
            metodo_pago: v.metodo_pago,
@@ -1083,7 +1280,12 @@ index 12bf428..adc0107 100644
            estado: v.estado,
            fecha: v.fecha,
            cliente_nombre:
-@@ -73,14 +105,15 @@ export function HistorialTab() {
+@@ -69,18 +102,19 @@ export function HistorialTab() {
+     return () => {
+       cancelado = true;
+     };
+-  }, [fecha]);
++  }, [fecha, recarga]);
  
    // Mismo criterio que "Ventas de hoy" y el cierre de caja: solo ventas
    // completadas (las anuladas o devueltas se listan pero no suman).
@@ -1106,7 +1308,7 @@ index 12bf428..adc0107 100644
      return { total, porMetodo };
    }, [ventas]);
  
-@@ -98,9 +131,9 @@ export function HistorialTab() {
+@@ -98,9 +132,9 @@ export function HistorialTab() {
              <span className="font-semibold text-neutral-900 dark:text-white">
                Total del día: {formatMoney(resumen.total)}
              </span>
@@ -1119,7 +1321,7 @@ index 12bf428..adc0107 100644
                </span>
              ))}
            </div>
-@@ -133,7 +166,8 @@ export function HistorialTab() {
+@@ -133,7 +167,8 @@ export function HistorialTab() {
                      hour: "numeric",
                      minute: "2-digit",
                    })}{" "}
@@ -1129,6 +1331,14 @@ index 12bf428..adc0107 100644
                    {v.estado !== "completada" && (
                      <span className="ml-1 font-semibold capitalize text-vt-red">· {v.estado}</span>
                    )}
+@@ -151,6 +186,7 @@ export function HistorialTab() {
+         <VentaDetalleModal
+           ventaId={ventaSeleccionada}
+           onClose={() => setVentaSeleccionada(null)}
++          onAnulada={() => setRecarga((n) => n + 1)}
+         />
+       )}
+     </div>
 diff --git a/src/components/pos/POSClient.tsx b/src/components/pos/POSClient.tsx
 index 8c775e8..712723d 100644
 --- a/src/components/pos/POSClient.tsx
@@ -1708,52 +1918,149 @@ index 9d95aef..8b118e6 100644
            <>
              <div className="mb-1.5 mt-4 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
 diff --git a/src/components/pos/VentaDetalleModal.tsx b/src/components/pos/VentaDetalleModal.tsx
-index 97554cf..534ae9c 100644
+index 97554cf..af5db6d 100644
 --- a/src/components/pos/VentaDetalleModal.tsx
 +++ b/src/components/pos/VentaDetalleModal.tsx
-@@ -5,6 +5,7 @@ import { X, Receipt } from "lucide-react";
+@@ -1,10 +1,15 @@
+ "use client";
+ 
+-import { useEffect, useState } from "react";
+-import { X, Receipt } from "lucide-react";
++import { useEffect, useState, useTransition } from "react";
++import { X, Receipt, Ban } from "lucide-react";
  import { createClient } from "@/lib/supabase/client";
  import { formatMoney } from "@/lib/money";
  import { BotonCopiaFactura } from "./BotonCopiaFactura";
 +import { lineasPago, textoMetodoPago, type PagoFila } from "@/lib/pagos";
++import { anularVentaAction, puedeAnularFacturasAction } from "@/app/actions/pos-actions";
++import { useToast } from "@/components/ui/ToastProvider";
++
++type Anulacion = { motivo: string; anulada_por_nombre: string | null; anulada_at: string; en_modo_soporte: boolean };
  
  type Detalle = {
    numero_factura: string;
-@@ -13,6 +14,7 @@ type Detalle = {
+@@ -13,6 +18,9 @@ type Detalle = {
    subtotal: number;
    descuento: number;
    metodo_pago: string;
++  estado: string;
++  anulacion: Anulacion | null;
 +  pagos: PagoFila[];
    cliente_nombre: string;
    cajero_nombre: string;
    items: { nombre_producto: string; cantidad: number; precio_unitario: number; subtotal: number }[];
-@@ -31,7 +33,7 @@ export function VentaDetalleModal({
+@@ -21,21 +29,55 @@ type Detalle = {
+ export function VentaDetalleModal({
+   ventaId,
+   onClose,
++  onAnulada,
+ }: {
+   ventaId: string;
+   onClose: () => void;
++  /** Se llama después de anular, para refrescar la lista. */
++  onAnulada?: () => void;
+ }) {
+   const [detalle, setDetalle] = useState<Detalle | null>(null);
++  const [puedeAnular, setPuedeAnular] = useState(false);
++  const [anulando, setAnulando] = useState(false);
++  const [motivo, setMotivo] = useState("");
++  const [recarga, setRecarga] = useState(0);
++  const [pending, startTransition] = useTransition();
++  const toast = useToast();
++
++  // El servidor decide si este usuario puede anular (admin o super admin en
++  // modo soporte); el botón solo se muestra si puede.
++  useEffect(() => {
++    puedeAnularFacturasAction().then(setPuedeAnular).catch(() => setPuedeAnular(false));
++  }, []);
++
++  function confirmarAnulacion() {
++    if (motivo.trim().length < 3) {
++      toast.error("Escribe el motivo de la anulación");
++      return;
++    }
++    startTransition(async () => {
++      const res = await anularVentaAction(ventaId, motivo);
++      if (res.error) {
++        toast.error(res.error);
++        return;
++      }
++      toast.success("Factura anulada. Los productos volvieron al inventario.");
++      setAnulando(false);
++      setMotivo("");
++      setRecarga((n) => n + 1);
++      onAnulada?.();
++    });
++  }
+ 
+   useEffect(() => {
      let cancelado = false;
      const supabase = createClient();
      (async () => {
 -      const [{ data: venta }, { data: items }] = await Promise.all([
-+      const [{ data: venta }, { data: items }, { data: pagos }] = await Promise.all([
++      const [{ data: venta }, { data: items }, { data: pagos }, { data: anulacion }] = await Promise.all([
          supabase
            .from("ventas")
            .select(
-@@ -43,6 +45,8 @@ export function VentaDetalleModal({
+-            "numero_factura, fecha, total, subtotal, descuento, metodo_pago, clientes(nombre), usuarios(nombre)"
++            "numero_factura, fecha, total, subtotal, descuento, metodo_pago, estado, clientes(nombre), usuarios(nombre)"
+           )
+           .eq("id", ventaId)
+           .single(),
+@@ -43,6 +85,13 @@ export function VentaDetalleModal({
            .from("venta_items")
            .select("nombre_producto, cantidad, precio_unitario, subtotal")
            .eq("venta_id", ventaId),
 +        // Si la tabla no existe todavía, simplemente no hay desglose.
 +        supabase.from("venta_pagos").select("metodo, tipo_tarjeta, monto").eq("venta_id", ventaId),
++        supabase
++          .from("ventas_anuladas")
++          .select("motivo, anulada_por_nombre, anulada_at, en_modo_soporte")
++          .eq("venta_id", ventaId)
++          .maybeSingle(),
        ]);
        if (cancelado || !venta) return;
        setDetalle({
-@@ -52,6 +56,7 @@ export function VentaDetalleModal({
+@@ -52,6 +101,9 @@ export function VentaDetalleModal({
          subtotal: Number(venta.subtotal),
          descuento: Number(venta.descuento),
          metodo_pago: venta.metodo_pago,
++        estado: venta.estado,
++        anulacion: (anulacion as Anulacion | null) ?? null,
 +        pagos: (pagos ?? []) as PagoFila[],
          cliente_nombre:
            (venta.clientes as unknown as { nombre: string } | null)?.nombre ?? "General",
          cajero_nombre:
-@@ -111,8 +116,14 @@ export function VentaDetalleModal({
+@@ -62,7 +114,7 @@ export function VentaDetalleModal({
+     return () => {
+       cancelado = true;
+     };
+-  }, [ventaId]);
++  }, [ventaId, recarga]);
+ 
+   return (
+     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+@@ -88,7 +140,18 @@ export function VentaDetalleModal({
+         {!detalle ? (
+           <div className="px-6 py-10 text-center text-sm text-vt-text3">Cargando…</div>
+         ) : (
+-          <div className="px-6 py-4">
++          <div className="max-h-[80vh] overflow-y-auto px-6 py-4">
++            {detalle.estado === "anulada" && (
++              <div className="mb-3 rounded-xl border border-vt-red/30 bg-vt-red/10 px-3 py-2 text-sm text-vt-red">
++                <div className="font-bold">Factura anulada</div>
++                {detalle.anulacion && (
++                  <div className="mt-0.5 text-xs">
++                    {detalle.anulacion.motivo} · {detalle.anulacion.anulada_por_nombre ?? "—"} ·{" "}
++                    {new Date(detalle.anulacion.anulada_at).toLocaleString("es-DO")}
++                  </div>
++                )}
++              </div>
++            )}
+             <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
+               <div>
+                 <div className="text-xs text-vt-text3">Cliente</div>
+@@ -111,8 +174,14 @@ export function VentaDetalleModal({
                <div>
                  <div className="text-xs text-vt-text3">Método</div>
                  <div className="font-semibold capitalize text-neutral-900 dark:text-white">
@@ -1769,6 +2076,60 @@ index 97554cf..534ae9c 100644
                </div>
              </div>
  
+@@ -159,6 +228,53 @@ export function VentaDetalleModal({
+                 <span>{formatMoney(detalle.total)}</span>
+               </div>
+             </div>
++
++            {puedeAnular && detalle.estado === "completada" && !anulando && (
++              <button
++                onClick={() => setAnulando(true)}
++                className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl border border-vt-red/40 py-2 text-sm font-semibold text-vt-red transition hover:bg-vt-red/10"
++              >
++                <Ban className="h-4 w-4" />
++                Anular factura
++              </button>
++            )}
++
++            {anulando && (
++              <div className="mt-4 rounded-xl border border-vt-red/30 bg-vt-red/5 p-3">
++                <div className="text-sm font-semibold text-neutral-900 dark:text-white">
++                  ¿Anular {detalle.numero_factura} por {formatMoney(detalle.total)}?
++                </div>
++                <p className="mt-1 text-xs text-vt-text2">
++                  Los productos vuelven al inventario, la venta sale de caja, dashboard y reportes, y
++                  queda registrado quién la anuló y por qué.
++                </p>
++                <input
++                  autoFocus
++                  value={motivo}
++                  onChange={(e) => setMotivo(e.target.value)}
++                  placeholder="Motivo (ej.: factura cobrada dos veces)"
++                  className="mt-2 w-full rounded-lg border border-vt-border bg-vt-card px-3 py-2 text-sm outline-none focus:border-vt-red"
++                />
++                <div className="mt-2 flex gap-2">
++                  <button
++                    onClick={() => {
++                      setAnulando(false);
++                      setMotivo("");
++                    }}
++                    className="flex-1 rounded-lg border border-vt-border py-2 text-sm font-semibold text-vt-text2"
++                  >
++                    Cancelar
++                  </button>
++                  <button
++                    onClick={confirmarAnulacion}
++                    disabled={pending}
++                    className="flex-1 rounded-lg bg-vt-red py-2 text-sm font-semibold text-white disabled:opacity-60"
++                  >
++                    {pending ? "Anulando…" : "Sí, anular"}
++                  </button>
++                </div>
++              </div>
++            )}
+           </div>
+         )}
+       </div>
 diff --git a/src/lib/caja/cuadre.ts b/src/lib/caja/cuadre.ts
 new file mode 100644
 index 0000000..b1302a7

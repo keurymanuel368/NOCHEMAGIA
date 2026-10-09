@@ -1,5 +1,27 @@
 # VentaTech: pagos mixtos, cierre de caja detallado y dashboard corregido
 
+## Nuevo: anular facturas (para limpiar las duplicadas)
+
+**Ejecuta `anular-facturas.sql`** en Supabase.
+
+Dónde: **POS → Historial → abre la factura → "Anular factura"**. Pide un motivo y confirmación.
+Lo pueden hacer el **administrador del negocio** y el **super admin en modo soporte**
+(el servidor lo comprueba; a un cajero no le aparece el botón).
+
+Qué hace, todo junto (si algo falla, no cambia nada):
+- La factura queda **anulada** (no se borra): sale de caja, dashboard, contabilidad y reportes.
+- Los productos **vuelven al inventario**.
+- Si fue a fiado (sin abonos), se quita la deuda y se recalcula el saldo del cliente.
+- Queda registrado **quién, cuándo y por qué** (tabla `ventas_anuladas`). Si se hizo desde
+  modo soporte, el nombre lleva "(soporte VentaTech)". Se ve en el detalle de la factura.
+
+No deja anular facturas con devoluciones o con abonos (eso se resuelve aparte).
+Si la factura tenía comprobante fiscal (NCF), repórtala como anulada en el formato 608 de la DGII.
+
+Para limpiar duplicados: corre la consulta 3 de `velocidad-y-duplicados.sql`, anula cada
+duplicado desde el POS y vuelve a ejecutar `velocidad-y-duplicados.sql` para activar la regla
+que impide nuevos duplicados.
+
 ## ⚠ Actualización 9-oct: facturas cobradas dos veces y lentitud
 
 **Ejecuta también `velocidad-y-duplicados.sql`** en Supabase (después de `pagos-mixtos.sql`).

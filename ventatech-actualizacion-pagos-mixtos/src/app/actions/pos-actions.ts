@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getCuadreCajaAbierta } from "@/lib/pos/queries";
+import { getUsuarioActual } from "@/lib/get-usuario-actual";
+import { esModoSoporteSuperAdmin } from "@/lib/modo-soporte";
 import type { MetodoPago, CartLine } from "@/lib/pos/types";
 import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
 
@@ -296,4 +298,62 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
   }
   revalidatePath("/pos");
   return { success: "Venta aparcada eliminada" };
+}
+
+// ============================================================
+// Anular factura (por ejemplo, una cobrada dos veces). La factura no se
+// borra: queda "anulada", sale de caja, dashboard y reportes, los productos
+// vuelven al inventario y queda registrado quién la anuló, cuándo y por qué.
+// Pueden hacerlo el administrador del negocio y el super admin en modo soporte.
+// ============================================================
+
+export async function puedeAnularFacturasAction(): Promise<boolean> {
+  const usuario = await getUsuarioActual();
+  if (!usuario) return false;
+  return usuario.es_admin || usuario.es_super_admin || (await esModoSoporteSuperAdmin(usuario.id));
+}
+
+export async function anularVentaAction(ventaId: string, motivo: string): Promise<PosActionState> {
+  const usuario = await getUsuarioActual();
+  if (!usuario) return { error: "Sesión no válida" };
+  const modoSoporte = await esModoSoporteSuperAdmin(usuario.id);
+  if (!usuario.es_admin && !usuario.es_super_admin && !modoSoporte) {
+    return { error: "Solo el administrador puede anular facturas" };
+  }
+  const motivoLimpio = motivo.trim();
+  if (motivoLimpio.length < 3) return { error: "Escribe el motivo de la anulación" };
+
+  // La factura tiene que ser de este negocio: se busca con la sesión del
+  // usuario (las reglas de seguridad solo le muestran las de su empresa).
+  const supabase = await createClient();
+  const { data: venta } = await supabase.from("ventas").select("id, estado").eq("id", ventaId).maybeSingle();
+  if (!venta) return { error: "No se encontró la factura" };
+  if (venta.estado !== "completada") return { error: `Esta factura ya está ${venta.estado}` };
+
+  try {
+    const admin = createAdminClient();
+    const { error } = await admin.rpc("anular_venta", {
+      p_venta_id: ventaId,
+      p_motivo: motivoLimpio,
+      p_usuario_id: usuario.id,
+      p_usuario_nombre: modoSoporte ? `${usuario.nombre} (soporte VentaTech)` : usuario.nombre,
+      p_modo_soporte: modoSoporte,
+    });
+    if (error) {
+      return {
+        error: error.message.includes("anular_venta")
+          ? "Falta ejecutar el SQL anular-facturas.sql en Supabase"
+          : error.message,
+      };
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "No se pudo anular la factura" };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/caja");
+  revalidatePath("/inventario");
+  revalidatePath("/clientes");
+  revalidatePath("/fiado");
+  return { success: "Factura anulada" };
 }

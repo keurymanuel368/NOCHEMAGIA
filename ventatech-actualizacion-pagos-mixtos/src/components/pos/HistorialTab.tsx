@@ -37,6 +37,7 @@ export function HistorialTab() {
   const [ventas, setVentas] = useState<HistorialItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [ventaSeleccionada, setVentaSeleccionada] = useState<string | null>(null);
+  const [recarga, setRecarga] = useState(0);
 
   useEffect(() => {
     let cancelado = false;
@@ -101,7 +102,7 @@ export function HistorialTab() {
     return () => {
       cancelado = true;
     };
-  }, [fecha]);
+  }, [fecha, recarga]);
 
   // Mismo criterio que "Ventas de hoy" y el cierre de caja: solo ventas
   // completadas (las anuladas o devueltas se listan pero no suman).
@@ -185,6 +186,7 @@ export function HistorialTab() {
         <VentaDetalleModal
           ventaId={ventaSeleccionada}
           onClose={() => setVentaSeleccionada(null)}
+          onAnulada={() => setRecarga((n) => n + 1)}
         />
       )}
     </div>
