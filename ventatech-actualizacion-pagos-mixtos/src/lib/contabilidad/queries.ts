@@ -2,8 +2,8 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { traerTodas } from "@/lib/supabase/paginar";
 import { fechaRD, rangoDiasRD } from "@/lib/fecha-rd";
-import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
-import { sumarDesglose, totalTarjeta } from "@/lib/pagos";
+import { abonosDelRango, devolucionesDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
+import { centavos, sumarDesglose, totalTarjeta } from "@/lib/pagos";
 import type { ResumenContable, Gasto } from "./types";
 
 export async function getResumenContable(desde: string, hasta: string): Promise<ResumenContable> {
@@ -13,7 +13,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
   // Todas las filas del período (antes se cortaba en 1000 ventas) y las
   // ventas mixtas repartidas entre sus métodos.
   const rango = { desde: desdeISO, hasta: hastaISO };
-  const [ventasRows, abonos, gastos, { data: items }] = await Promise.all([
+  const [ventasRows, abonos, gastos, { data: items }, devoluciones] = await Promise.all([
     ventasCompletadas(supabase, rango),
     abonosDelRango(supabase, rango),
     gastosDelRango(supabase, rango),
@@ -34,6 +34,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
         (v) => (v.venta_items ?? []) as { nombre_producto: string; cantidad: number; subtotal: number }[]
       ),
     })),
+    devolucionesDelRango(supabase, rango),
   ]);
 
   const ventasTotal = ventasRows.reduce((s, v) => s + v.total, 0);
@@ -76,15 +77,24 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
     .sort((a, b) => b.monto - a.monto)
     .slice(0, 8);
 
-  const ingresosReales = ventasTotal - porMetodo.fiado + abonosCobrados;
-  const utilidad = ingresosReales - gastosTotal;
+  // Mismas reglas que el cierre de caja: las devoluciones pagadas en efectivo
+  // son dinero que salió; antes no se restaban y Contabilidad mostraba más
+  // de lo que realmente entró.
+  const devolucionesTotal = centavos(devoluciones.reduce((s, d) => s + d.total_devuelto, 0));
+  const devolucionesEfectivo = centavos(
+    devoluciones.filter((d) => d.metodo_devolucion === "efectivo").reduce((s, d) => s + d.total_devuelto, 0)
+  );
+  const ingresosReales = centavos(ventasTotal - porMetodo.fiado + abonosCobrados - devolucionesEfectivo);
+  const utilidad = centavos(ingresosReales - gastosTotal);
 
   return {
-    ventasTotal,
+    ventasTotal: centavos(ventasTotal),
     numVentas: ventasRows.length,
     porMetodo,
-    abonosCobrados,
-    gastosTotal,
+    abonosCobrados: centavos(abonosCobrados),
+    devolucionesTotal,
+    devolucionesEfectivo,
+    gastosTotal: centavos(gastosTotal),
     ingresosReales,
     utilidad,
     ventasPorDia,

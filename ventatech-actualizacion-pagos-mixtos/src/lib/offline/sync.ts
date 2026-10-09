@@ -52,6 +52,7 @@ async function sincronizarSinBloqueo(): Promise<ResultadoSync> {
           metodoPago: venta.metodoPago,
           tipoTarjeta: venta.tipoTarjeta ?? null,
           pagos: venta.pagos,
+          fechaOriginal: venta.fecha,
           descuento: venta.descuento,
           localId: venta.localId,
         });

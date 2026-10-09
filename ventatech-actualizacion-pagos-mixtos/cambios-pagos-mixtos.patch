@@ -123,6 +123,98 @@ index 0000000..8a730ff
 +
 +revoke all on function public.anular_venta(uuid, text, uuid, text, boolean) from public, anon, authenticated;
 +grant execute on function public.anular_venta(uuid, text, uuid, text, boolean) to service_role;
+diff --git a/cierres-de-caja.sql b/cierres-de-caja.sql
+new file mode 100644
+index 0000000..7e1e35f
+--- /dev/null
++++ b/cierres-de-caja.sql
+@@ -0,0 +1,31 @@
++-- ============================================================
++-- VentaTech: cierre de caja guardado (no cambia después)
++-- Pegar en Supabase > SQL Editor > Run (una sola vez; se puede repetir).
++--
++-- Al cerrar la caja se guarda una "foto" del cuadre: lo vendido por método,
++-- abonos, devoluciones, gastos, el efectivo esperado, lo contado y la
++-- diferencia. El historial muestra esa foto, así un turno cerrado ya no
++-- cambia solo si después se anula una venta o se borra un gasto. Si algo
++-- cambió después, el historial lo indica aparte.
++-- ============================================================
++
++create table if not exists public.caja_cierres (
++  caja_id uuid primary key references public.caja(id) on delete cascade,
++  abierta_at timestamptz not null,
++  cerrada_at timestamptz not null,
++  monto_inicial numeric(12, 2) not null,
++  efectivo_esperado numeric(12, 2) not null,
++  monto_contado numeric(12, 2) not null,
++  diferencia numeric(12, 2) not null,
++  cuadre jsonb not null,
++  created_at timestamptz not null default now()
++);
++
++alter table public.caja_cierres enable row level security;
++drop policy if exists caja_cierres_select on public.caja_cierres;
++create policy caja_cierres_select on public.caja_cierres
++  for select to authenticated
++  using (exists (select 1 from public.caja c where c.id = caja_cierres.caja_id));
++revoke insert, update, delete on public.caja_cierres from anon, authenticated;
++grant select on public.caja_cierres to authenticated;
++grant all on public.caja_cierres to service_role;
+diff --git a/diagnostico-ventas-mes.sql b/diagnostico-ventas-mes.sql
+new file mode 100644
+index 0000000..2095a35
+--- /dev/null
++++ b/diagnostico-ventas-mes.sql
+@@ -0,0 +1,49 @@
++-- ============================================================
++-- Diagnóstico: ¿de dónde salen las "Ventas del mes"?
++-- Pegar en Supabase > SQL Editor > Run. SOLO LEE, no cambia nada.
++-- OJO: el SQL Editor ve TODAS las empresas (no aplica permisos).
++-- ============================================================
++
++-- 1) Ventas del mes por empresa (vía el cajero que hizo la venta).
++--    Si sale más de una fila, compara con la de tu negocio.
++select u.empresa_id,
++       count(*)              as ventas,
++       sum(v.total)          as total
++from public.ventas v
++left join public.usuarios u on u.id = v.usuario_id
++where v.estado = 'completada'
++  and v.fecha >= date_trunc('month', now() at time zone 'America/Santo_Domingo')
++                 at time zone 'America/Santo_Domingo'
++group by u.empresa_id
++order by total desc;
++
++-- 2) Ventas del mes por día y método (hora de RD).
++--    Busca días con montos raros.
++select (v.fecha at time zone 'America/Santo_Domingo')::date as dia,
++       v.metodo_pago,
++       count(*)     as ventas,
++       sum(v.total) as total
++from public.ventas v
++where v.estado = 'completada'
++  and v.fecha >= date_trunc('month', now() at time zone 'America/Santo_Domingo')
++                 at time zone 'America/Santo_Domingo'
++group by 1, 2
++order by 1, 2;
++
++-- 3) Las 20 ventas más grandes del mes (ventas de prueba, montos mal escritos...).
++select v.numero_factura, v.fecha at time zone 'America/Santo_Domingo' as fecha_rd,
++       v.total, v.metodo_pago
++from public.ventas v
++where v.estado = 'completada'
++  and v.fecha >= date_trunc('month', now() at time zone 'America/Santo_Domingo')
++                 at time zone 'America/Santo_Domingo'
++order by v.total desc
++limit 20;
++
++-- 4) Facturas repetidas (misma factura guardada dos veces).
++select v.numero_factura, count(*) as veces, sum(v.total) as total
++from public.ventas v
++where v.fecha >= date_trunc('month', now() at time zone 'America/Santo_Domingo')
++                 at time zone 'America/Santo_Domingo'
++group by v.numero_factura
++having count(*) > 1;
 diff --git a/pagos-mixtos.sql b/pagos-mixtos.sql
 new file mode 100644
 index 0000000..0009a9f
@@ -194,10 +286,10 @@ index 0000000..0009a9f
 +  end if;
 +end $$;
 diff --git a/src/app/actions/pos-actions.ts b/src/app/actions/pos-actions.ts
-index b88225f..90032f1 100644
+index b88225f..f526b1c 100644
 --- a/src/app/actions/pos-actions.ts
 +++ b/src/app/actions/pos-actions.ts
-@@ -2,15 +2,27 @@
+@@ -2,24 +2,103 @@
  
  import { revalidatePath } from "next/cache";
  import { createClient } from "@/lib/supabase/server";
@@ -205,6 +297,8 @@ index b88225f..90032f1 100644
 +import { getCuadreCajaAbierta } from "@/lib/pos/queries";
 +import { getUsuarioActual } from "@/lib/get-usuario-actual";
 +import { esModoSoporteSuperAdmin } from "@/lib/modo-soporte";
++import { cuadreDelRango } from "@/lib/ventas/movimientos";
++import { efectivoEsperado, type CuadreTurno } from "@/lib/caja/cuadre";
  import type { MetodoPago, CartLine } from "@/lib/pos/types";
 +import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
  
@@ -225,16 +319,83 @@ index b88225f..90032f1 100644
    return { success: "Caja abierta" };
  }
  
-@@ -19,6 +31,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
+-export async function cerrarCajaAction(montoFinal: number): Promise<PosActionState> {
++export type CierreGuardado = {
++  abiertaAt: string;
++  cerradaAt: string;
++  montoInicial: number;
++  montoContado: number;
++  efectivoEsperado: number;
++  diferencia: number;
++  cuadre: CuadreTurno;
++};
++
++export async function cerrarCajaAction(
++  montoFinal: number
++): Promise<PosActionState & { cierre?: CierreGuardado; avisoCierre?: string }> {
+   const supabase = await createClient();
++  const { data: abiertas } = await supabase
++    .from("caja")
++    .select("id")
++    .eq("estado", "abierta")
++    .order("abierta_at", { ascending: false })
++    .limit(1);
++  const cajaId = abiertas?.[0]?.id as string | undefined;
++
    const { error } = await supabase.rpc("cerrar_caja", { p_monto_final: montoFinal });
    if (error) return { error: error.message };
    revalidatePath("/pos");
+-  return { success: "Caja cerrada" };
 +  revalidatePath("/caja");
 +  revalidatePath("/");
-   return { success: "Caja cerrada" };
++
++  // Cuadre definitivo, calculado con la hora exacta de cierre que guardó la
++  // base de datos. Es lo que se imprime y lo que queda guardado: el
++  // historial ya no lo recalcula (antes un turno cerrado cambiaba solo si
++  // después se anulaba una venta o se borraba un gasto).
++  if (!cajaId) return { success: "Caja cerrada" };
++  const { data: caja } = await supabase
++    .from("caja")
++    .select("abierta_at, cerrada_at, monto_inicial, monto_final")
++    .eq("id", cajaId)
++    .maybeSingle();
++  if (!caja?.cerrada_at) return { success: "Caja cerrada" };
++
++  const cuadre = await cuadreDelRango(supabase, { desde: caja.abierta_at, hasta: caja.cerrada_at, hastaIncluido: true });
++  const montoInicial = Number(caja.monto_inicial);
++  const contado = caja.monto_final === null ? montoFinal : Number(caja.monto_final);
++  const esperado = efectivoEsperado(montoInicial, cuadre);
++  const cierre: CierreGuardado = {
++    abiertaAt: caja.abierta_at,
++    cerradaAt: caja.cerrada_at,
++    montoInicial,
++    montoContado: contado,
++    efectivoEsperado: esperado,
++    diferencia: centavos(contado - esperado),
++    cuadre,
++  };
++
++  let avisoCierre: string | undefined;
++  try {
++    const { error: errorFoto } = await createAdminClient().from("caja_cierres").upsert({
++      caja_id: cajaId,
++      abierta_at: cierre.abiertaAt,
++      cerrada_at: cierre.cerradaAt,
++      monto_inicial: cierre.montoInicial,
++      efectivo_esperado: cierre.efectivoEsperado,
++      monto_contado: cierre.montoContado,
++      diferencia: cierre.diferencia,
++      cuadre: cierre.cuadre,
++    });
++    if (errorFoto) avisoCierre = "El cierre no se pudo guardar en el historial (falta ejecutar cierres-de-caja.sql).";
++  } catch {
++    avisoCierre = "El cierre no se pudo guardar en el historial.";
++  }
++  return { success: "Caja cerrada", cierre, avisoCierre };
  }
  
-@@ -29,6 +43,68 @@ export type ItemVentaInput = {
+ export type ItemVentaInput = {
+@@ -29,6 +108,68 @@ export type ItemVentaInput = {
    cantidad: number;
  };
  
@@ -303,7 +464,7 @@ index b88225f..90032f1 100644
  export async function registrarVentaAction(input: {
    items: ItemVentaInput[];
    clienteId: string | null;
-@@ -37,6 +113,10 @@ export async function registrarVentaAction(input: {
+@@ -37,6 +178,12 @@ export async function registrarVentaAction(input: {
    ncfTipo?: string | null;
    cuponId?: string | null;
    localId?: string | null;
@@ -311,10 +472,12 @@ index b88225f..90032f1 100644
 +  tipoTarjeta?: TipoTarjeta | null;
 +  /** Solo para pago mixto: cuánto se pagó con cada método. */
 +  pagos?: PagoParte[];
++  /** Venta hecha sin conexión: hora real en que se cobró. */
++  fechaOriginal?: string | null;
  }): Promise<
    PosActionState & {
      ventaId?: string;
-@@ -47,21 +127,50 @@ export async function registrarVentaAction(input: {
+@@ -47,21 +194,71 @@ export async function registrarVentaAction(input: {
      descuento?: number;
      total?: number;
      items?: { nombre: string; cantidad: number; subtotal: number }[];
@@ -354,6 +517,7 @@ index b88225f..90032f1 100644
 -  if (error) return { error: error.message };
 -  const ventaId = data as string;
 +  let ventaId = data as string;
++  let esNueva = !error;
 +  if (error) {
 +    // La misma venta llegó dos veces (reintento): la base de datos rechaza la
 +    // copia. Se devuelve la venta que ya existe en vez de dar error o cobrar
@@ -364,11 +528,31 @@ index b88225f..90032f1 100644
 +        : null;
 +    if (!existente) return { error: error.message };
 +    ventaId = existente.id as string;
++    esNueva = false;
++  }
++
++  // Venta hecha sin conexión: la base de datos le pone la hora en que se
++  // sincronizó. Si eso fue después de cerrar caja, la venta caía en el turno
++  // siguiente (un turno salía con faltante y el otro con sobrante). Se le
++  // devuelve la hora real en que se cobró.
++  if (esNueva && input.fechaOriginal) {
++    const original = Date.parse(input.fechaOriginal);
++    const ahora = Date.now();
++    if (!Number.isNaN(original) && original < ahora - 60_000 && original > ahora - 7 * 86_400_000) {
++      try {
++        await createAdminClient()
++          .from("ventas")
++          .update({ fecha: new Date(original).toISOString() })
++          .eq("id", ventaId);
++      } catch {
++        // Si no se puede, la venta queda con la hora de sincronización.
++      }
++    }
 +  }
  
    const [{ data: venta }, { data: items }] = await Promise.all([
      supabase
-@@ -75,8 +184,26 @@ export async function registrarVentaAction(input: {
+@@ -75,8 +272,26 @@ export async function registrarVentaAction(input: {
        .eq("venta_id", ventaId),
    ]);
  
@@ -396,7 +580,7 @@ index b88225f..90032f1 100644
    return {
      success: "Venta registrada",
      ventaId,
-@@ -91,6 +218,8 @@ export async function registrarVentaAction(input: {
+@@ -91,6 +306,8 @@ export async function registrarVentaAction(input: {
        cantidad: Number(i.cantidad),
        subtotal: Number(i.subtotal),
      })),
@@ -405,7 +589,7 @@ index b88225f..90032f1 100644
    };
  }
  
-@@ -170,3 +299,61 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
+@@ -170,3 +387,61 @@ export async function eliminarVentaAparcadaAction(id: string): Promise<PosAction
    revalidatePath("/pos");
    return { success: "Venta aparcada eliminada" };
  }
@@ -468,7 +652,7 @@ index b88225f..90032f1 100644
 +  return { success: "Factura anulada" };
 +}
 diff --git a/src/app/actions/reportes-actions.ts b/src/app/actions/reportes-actions.ts
-index 2d1f696..da5d2d4 100644
+index 2d1f696..85e5d22 100644
 --- a/src/app/actions/reportes-actions.ts
 +++ b/src/app/actions/reportes-actions.ts
 @@ -2,7 +2,10 @@
@@ -477,7 +661,7 @@ index 2d1f696..da5d2d4 100644
  import { getUsuarioActual } from "@/lib/get-usuario-actual";
 +import { traerTodas } from "@/lib/supabase/paginar";
  import { rangoDiasRD, ZONA_NEGOCIO } from "@/lib/fecha-rd";
-+import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
++import { abonosDelRango, devolucionesDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 +import { sumarDesglose } from "@/lib/pagos";
  
  export type ReporteResultado = { columns: string[]; rows: (string | number)[][] };
@@ -597,7 +781,7 @@ index 2d1f696..da5d2d4 100644
  
    return {
      columns: ["Cliente", "Monto", "Método", "Fecha", "Cajero", "Notas"],
-@@ -134,16 +157,19 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+@@ -134,25 +157,38 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
    const supabase = await createClient();
    const { desdeISO, hastaISO } = rango(desde, hasta);
  
@@ -607,25 +791,30 @@ index 2d1f696..da5d2d4 100644
 -    supabase.from("gastos").select("monto").eq("activo", true).gte("fecha", desdeISO).lt("fecha", hastaISO),
 +  // Todas las filas del período (Supabase corta cada consulta en 1000).
 +  const periodo = { desde: desdeISO, hasta: hastaISO };
-+  const [ventas, abonos, gastos] = await Promise.all([
++  const [ventas, abonos, gastos, devoluciones] = await Promise.all([
 +    ventasCompletadas(supabase, periodo),
 +    abonosDelRango(supabase, periodo),
 +    gastosDelRango(supabase, periodo),
++    devolucionesDelRango(supabase, periodo),
    ]);
  
 -  const ventasTotal = (ventas ?? []).reduce((s, v) => s + Number(v.total), 0);
 -  const fiadoTotal = (ventas ?? []).filter((v) => v.metodo_pago === "fiado").reduce((s, v) => s + Number(v.total), 0);
 -  const abonosTotal = (abonos ?? []).reduce((s, a) => s + Number(a.monto), 0);
 -  const gastosTotal = (gastos ?? []).reduce((s, g) => s + Number(g.monto), 0);
+-  const ingresosReales = ventasTotal - fiadoTotal + abonosTotal;
 +  const desglose = sumarDesglose(ventas);
 +  const ventasTotal = ventas.reduce((s, v) => s + v.total, 0);
 +  const fiadoTotal = desglose.fiado;
 +  const abonosTotal = abonos.reduce((s, a) => s + a.monto, 0);
 +  const gastosTotal = gastos.reduce((s, g) => s + g.monto, 0);
-   const ingresosReales = ventasTotal - fiadoTotal + abonosTotal;
++  const devolucionesEfectivo = devoluciones
++    .filter((d) => d.metodo_devolucion === "efectivo")
++    .reduce((s, d) => s + d.total_devuelto, 0);
++  const ingresosReales = ventasTotal - fiadoTotal + abonosTotal - devolucionesEfectivo;
    const utilidad = ingresosReales - gastosTotal;
  
-@@ -151,6 +177,11 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
+   return {
      columns: ["Concepto", "Monto"],
      rows: [
        ["Ventas totales", ventasTotal.toFixed(2)],
@@ -636,7 +825,10 @@ index 2d1f696..da5d2d4 100644
 +      ["  Transferencia", desglose.transferencia.toFixed(2)],
        ["Ventas a fiado", fiadoTotal.toFixed(2)],
        ["Abonos cobrados", abonosTotal.toFixed(2)],
++      ["Devoluciones pagadas en efectivo", (-devolucionesEfectivo).toFixed(2)],
        ["Ingresos reales", ingresosReales.toFixed(2)],
+       ["Gastos totales", gastosTotal.toFixed(2)],
+       ["Utilidad", utilidad.toFixed(2)],
 diff --git a/src/app/page.tsx b/src/app/page.tsx
 index 863859a..e2f7160 100644
 --- a/src/app/page.tsx
@@ -714,7 +906,7 @@ index 863859a..e2f7160 100644
          <YearComparisonChart data={comparativaAnual} />
  
 diff --git a/src/components/caja/CajaClient.tsx b/src/components/caja/CajaClient.tsx
-index e3aabe9..68ad5b7 100644
+index e3aabe9..5620002 100644
 --- a/src/components/caja/CajaClient.tsx
 +++ b/src/components/caja/CajaClient.tsx
 @@ -8,6 +8,7 @@ import { formatMoney } from "@/lib/money";
@@ -836,12 +1028,23 @@ index e3aabe9..68ad5b7 100644
                  return (
                    <tr key={c.id} className="border-b border-vt-border last:border-0 hover:bg-vt-card-hover">
                      <td className="px-4 py-3 text-sm font-semibold text-neutral-900 dark:text-white">
-@@ -183,6 +202,12 @@ export function CajaClient({
+@@ -183,6 +202,23 @@ export function CajaClient({
                      <td className="px-4 py-3 font-mono text-sm text-vt-text2">
                        {formatMoney(c.monto_inicial)}
                      </td>
 +                    <td className="px-4 py-3 font-mono text-sm text-vt-text2">
 +                      {formatMoney(c.cuadre.ventaNeta)}
++                      {c.cambios_posteriores && (
++                        <div
++                          className="mt-0.5 font-sans text-[11px] font-semibold text-vt-amber"
++                          title="Después de cerrar se anularon ventas, se borraron gastos o llegaron ventas sin conexión. El cuadre de arriba es el que se hizo al cerrar."
++                        >
++                          Cambió después del cierre: ventas {c.cambios_posteriores.ventas >= 0 ? "+" : "−"}
++                          {formatMoney(Math.abs(c.cambios_posteriores.ventas))}, efectivo{" "}
++                          {c.cambios_posteriores.efectivo >= 0 ? "+" : "−"}
++                          {formatMoney(Math.abs(c.cambios_posteriores.efectivo))}
++                        </div>
++                      )}
 +                    </td>
 +                    <td className="px-4 py-3 font-mono text-sm text-vt-text2">
 +                      {formatMoney(c.efectivo_esperado)}
@@ -849,7 +1052,7 @@ index e3aabe9..68ad5b7 100644
                      <td className="px-4 py-3 font-mono text-sm text-vt-text2">
                        {c.monto_final !== null ? formatMoney(c.monto_final) : "—"}
                      </td>
-@@ -190,12 +215,18 @@ export function CajaClient({
+@@ -190,12 +226,18 @@ export function CajaClient({
                        className={`px-4 py-3 font-mono text-sm font-semibold ${
                          diferencia === null
                            ? "text-vt-text3"
@@ -872,7 +1075,7 @@ index e3aabe9..68ad5b7 100644
                      </td>
                      <td className="px-4 py-3">
                        <span
-@@ -226,8 +257,7 @@ export function CajaClient({
+@@ -226,8 +268,7 @@ export function CajaClient({
              modal === "cerrar" && cajaActual
                ? {
                    montoInicial: cajaActual.monto_inicial,
@@ -955,6 +1158,19 @@ index e7e697a..d5e0992 100644
        if (cancelado) return;
        setDeudas(
          (data ?? []).map((d) => ({
+diff --git a/src/components/contabilidad/ResumenTab.tsx b/src/components/contabilidad/ResumenTab.tsx
+index 028888c..75902b1 100644
+--- a/src/components/contabilidad/ResumenTab.tsx
++++ b/src/components/contabilidad/ResumenTab.tsx
+@@ -107,7 +107,7 @@ export function ResumenTab({
+           icon={TrendingUp}
+           label="Ingresos reales"
+           value={formatMoney(resumen.ingresosReales)}
+-          sub="ventas - fiado + abonos"
++          sub="ventas - fiado + abonos - devoluciones en efectivo"
+           accent="from-green-400 to-green-600"
+         />
+         <StatMini
 diff --git a/src/components/dashboard/SalesChart.tsx b/src/components/dashboard/SalesChart.tsx
 index 3a49a28..646398e 100644
 --- a/src/components/dashboard/SalesChart.tsx
@@ -1067,10 +1283,16 @@ index 45b2361..e27ef33 100644
            nombre: i.nombre_producto,
            cantidad: Number(i.cantidad),
 diff --git a/src/components/pos/CajaModal.tsx b/src/components/pos/CajaModal.tsx
-index 0bd1fd2..60afc15 100644
+index 0bd1fd2..b7eef6b 100644
 --- a/src/components/pos/CajaModal.tsx
 +++ b/src/components/pos/CajaModal.tsx
-@@ -7,6 +7,7 @@ import { formatMoney } from "@/lib/money";
+@@ -2,11 +2,12 @@
+ 
+ import { useState, useTransition } from "react";
+ import { Archive, X } from "lucide-react";
+-import { abrirCajaAction, cerrarCajaAction } from "@/app/actions/pos-actions";
++import { abrirCajaAction, cerrarCajaAction, type CierreGuardado } from "@/app/actions/pos-actions";
+ import { formatMoney } from "@/lib/money";
  import { useToast } from "@/components/ui/ToastProvider";
  import { imprimirCierreCaja } from "@/lib/pos/printCaja";
  import { useNegocio } from "@/components/providers/NegocioProvider";
@@ -1106,17 +1328,45 @@ index 0bd1fd2..60afc15 100644
  
    function confirmar() {
      const valor = Number(monto);
-@@ -61,8 +64,7 @@ export function CajaModal({
-           abiertaAt: cuadre.abiertaAt,
-           cerradaAt: new Date().toISOString(),
-           montoInicial: cuadre.montoInicial,
+@@ -44,7 +47,7 @@ export function CajaModal({
+       return;
+     }
+     startTransition(async () => {
+-      const res =
++      const res: { error?: string; cierre?: CierreGuardado; avisoCierre?: string } =
+         mode === "abrir" ? await abrirCajaAction(valor) : await cerrarCajaAction(valor);
+       if (res.error) {
+         setError(res.error);
+@@ -54,15 +57,23 @@ export function CajaModal({
+       toast.success(mode === "abrir" ? "Caja abierta" : "Caja cerrada");
+ 
+       if (mode === "cerrar" && cuadre) {
++        // Se imprime el cuadre definitivo que calculó el servidor al cerrar
++        // (incluye ventas hechas mientras esta ventana estaba abierta).
++        const final = res.cierre;
++        if (res.avisoCierre) toast.error(res.avisoCierre);
++        if (final && final.diferencia !== Math.round((valor - (esperado ?? 0)) * 100) / 100) {
++          toast.error(
++            `Hubo movimientos mientras cerrabas: el efectivo esperado final es ${formatMoney(final.efectivoEsperado)}`
++          );
++        }
+         // No se espera la impresión: el cajero no debe quedarse mirando.
+         imprimirCierreCaja({
+           negocioNombre,
+           cajero: cuadre.cajero,
+-          abiertaAt: cuadre.abiertaAt,
+-          cerradaAt: new Date().toISOString(),
+-          montoInicial: cuadre.montoInicial,
 -          ventasEfectivo: cuadre.ventasEfectivo,
 -          ventasTotal: cuadre.ventasTotal,
-+          cuadre: cuadre.cuadre,
++          abiertaAt: final?.abiertaAt ?? cuadre.abiertaAt,
++          cerradaAt: final?.cerradaAt ?? new Date().toISOString(),
++          montoInicial: final?.montoInicial ?? cuadre.montoInicial,
++          cuadre: final?.cuadre ?? cuadre.cuadre,
            montoContado: valor,
          }).catch(() => {});
        }
-@@ -73,7 +75,7 @@ export function CajaModal({
+@@ -73,7 +84,7 @@ export function CajaModal({
  
    return (
      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -1125,7 +1375,7 @@ index 0bd1fd2..60afc15 100644
          <div className="mb-4 flex items-center justify-between">
            <div className="flex items-center gap-2">
              <Archive className="h-5 w-5 text-blue-500" />
-@@ -87,30 +89,42 @@ export function CajaModal({
+@@ -87,30 +98,42 @@ export function CajaModal({
          </div>
  
          {cuadre && esperado !== null && (
@@ -2288,7 +2538,7 @@ index 0000000..b1302a7
 +  return [gaveta, ventas, banco];
 +}
 diff --git a/src/lib/caja/queries.ts b/src/lib/caja/queries.ts
-index 17a4654..1287a90 100644
+index 17a4654..13ccb1a 100644
 --- a/src/lib/caja/queries.ts
 +++ b/src/lib/caja/queries.ts
 @@ -1,5 +1,16 @@
@@ -2308,7 +2558,7 @@ index 17a4654..1287a90 100644
  
  export type CajaSesion = {
    id: string;
-@@ -9,72 +20,107 @@ export type CajaSesion = {
+@@ -9,72 +20,147 @@ export type CajaSesion = {
    estado: "abierta" | "cerrada";
    abierta_at: string;
    cerrada_at: string | null;
@@ -2318,6 +2568,13 @@ index 17a4654..1287a90 100644
 +  efectivo_esperado: number;
 +  /** Contado − esperado (positivo = sobrante, negativo = faltante). null si sigue abierta. */
 +  diferencia: number | null;
++  /** true si el cuadre viene de la foto guardada al cerrar (no se recalcula). */
++  cierre_guardado: boolean;
++  /**
++   * Lo que cambió en este turno DESPUÉS de cerrarlo (ventas anuladas, gastos
++   * borrados, ventas offline que llegaron tarde...). null si no cambió nada.
++   */
++  cambios_posteriores: { ventas: number; efectivo: number } | null;
 +  // Campos de antes, se mantienen para no romper nada.
    ventas_efectivo: number;
    num_ventas: number;
@@ -2354,6 +2611,8 @@ index 17a4654..1287a90 100644
 +    cuadre,
 +    efectivo_esperado: esperado,
 +    diferencia: montoFinal === null || c.estado === "abierta" ? null : centavos(montoFinal - esperado),
++    cierre_guardado: false,
++    cambios_posteriores: null,
 +    ventas_efectivo: cuadre.desglose.efectivo,
 +    num_ventas: cuadre.numVentas,
 +    ventas_total: cuadre.ventasTotal,
@@ -2443,24 +2702,55 @@ index 17a4654..1287a90 100644
 +    gastosDelRango(supabase, rango),
 +  ]);
 +
++  // Fotos guardadas al cerrar (si ya se ejecutó cierres-de-caja.sql).
++  const { data: fotos } = await supabase
++    .from("caja_cierres")
++    .select("caja_id, efectivo_esperado, monto_contado, diferencia, cuadre")
++    .in("caja_id", cajas.map((c) => c.id));
++  const fotoPorCaja = new Map((fotos ?? []).map((f) => [f.caja_id as string, f]));
++
++  // Un turno sin cerrar que no es el último (caja que se quedó abierta y se
++  // abrió otra) termina donde empieza el siguiente: antes contaba todo lo
++  // posterior y esas ventas aparecían repetidas en dos turnos.
++  const ordenadas = [...cajas].sort((a, b) => Date.parse(a.abierta_at) - Date.parse(b.abierta_at));
++  const siguiente = new Map(ordenadas.map((c, i) => [c.id, ordenadas[i + 1]?.abierta_at ?? null]));
++
 +  return cajas.map((c) => {
 +    const inicio = Date.parse(c.abierta_at);
-+    const fin = c.cerrada_at ? Date.parse(c.cerrada_at) : Number.POSITIVE_INFINITY;
++    const proxima = siguiente.get(c.id);
++    const fin = c.cerrada_at
++      ? Date.parse(c.cerrada_at)
++      : proxima
++        ? Date.parse(proxima) - 1
++        : Number.POSITIVE_INFINITY;
 +    const dentro = (fecha: string) => {
 +      const t = Date.parse(fecha);
 +      return t >= inicio && t <= fin;
 +    };
-+    const cuadre = calcularCuadre({
++    const actual = calcularCuadre({
 +      ventas: ventas.filter((v) => dentro(v.fecha)),
 +      devoluciones: devoluciones.filter((d) => dentro(d.fecha)),
 +      abonos: abonos.filter((a) => dentro(a.fecha)),
 +      gastos: gastos.filter((g) => dentro(g.fecha)),
 +    });
-+    return armarSesion(c, cuadre);
++
++    const foto = fotoPorCaja.get(c.id);
++    if (!foto) return armarSesion(c, actual);
++
++    // Turno cerrado con foto: se muestra lo que se cuadró al cerrar.
++    const guardado = foto.cuadre as CuadreTurno;
++    const sesion = armarSesion(c, guardado);
++    sesion.efectivo_esperado = Number(foto.efectivo_esperado);
++    sesion.diferencia = Number(foto.diferencia);
++    sesion.cierre_guardado = true;
++    const dv = centavos(actual.ventaNeta - guardado.ventaNeta);
++    const de = centavos(actual.efectivoNeto - guardado.efectivoNeto);
++    sesion.cambios_posteriores = dv !== 0 || de !== 0 ? { ventas: dv, efectivo: de } : null;
++    return sesion;
 +  });
  }
 diff --git a/src/lib/caja/reportePdf.ts b/src/lib/caja/reportePdf.ts
-index 165784d..27684d9 100644
+index 165784d..3eb9f19 100644
 --- a/src/lib/caja/reportePdf.ts
 +++ b/src/lib/caja/reportePdf.ts
 @@ -18,7 +18,8 @@ export function descargarReporteCaja(
@@ -2473,16 +2763,20 @@ index 165784d..27684d9 100644
        const colorDif = diferencia === null ? "#889" : diferencia >= 0 ? "#1b7f43" : "#c62828";
        return `
          <tr>
-@@ -26,6 +27,8 @@ export function descargarReporteCaja(
+@@ -26,6 +27,12 @@ export function descargarReporteCaja(
            <td>${new Date(c.abierta_at).toLocaleString("es-DO")}</td>
            <td>${c.cerrada_at ? new Date(c.cerrada_at).toLocaleString("es-DO") : "—"}</td>
            <td class="right">${formatMoney(c.monto_inicial)}</td>
-+          <td class="right">${formatMoney(c.cuadre.ventaNeta)}</td>
++          <td class="right">${formatMoney(c.cuadre.ventaNeta)}${
++            c.cambios_posteriores
++              ? `<div style="font-size:10px;color:#b26a00">Cambió después del cierre: ventas ${formatMoney(c.cambios_posteriores.ventas)}, efectivo ${formatMoney(c.cambios_posteriores.efectivo)}</div>`
++              : ""
++          }</td>
 +          <td class="right">${formatMoney(c.efectivo_esperado)}</td>
            <td class="right">${c.monto_final !== null ? formatMoney(c.monto_final) : "—"}</td>
            <td class="right" style="color:${colorDif}">${diferencia !== null ? formatMoney(diferencia) : "—"}</td>
            <td>${c.estado === "abierta" ? "Abierta" : "Cerrada"}</td>
-@@ -35,10 +38,7 @@ export function descargarReporteCaja(
+@@ -35,10 +42,7 @@ export function descargarReporteCaja(
  
    const totalInicial = historial.reduce((s, c) => s + c.monto_inicial, 0);
    const totalFinal = historial.reduce((s, c) => s + (c.monto_final ?? 0), 0);
@@ -2494,7 +2788,7 @@ index 165784d..27684d9 100644
  
    ventana.document.write(`
      <html>
-@@ -95,7 +95,7 @@ export function descargarReporteCaja(
+@@ -95,7 +99,7 @@ export function descargarReporteCaja(
              <div class="valor azul">${formatMoney(totalFinal)}</div>
            </div>
            <div class="tarjeta">
@@ -2503,7 +2797,7 @@ index 165784d..27684d9 100644
              <div class="valor ${totalDiferencia >= 0 ? "verde" : "rojo"}">${formatMoney(totalDiferencia)}</div>
            </div>
          </div>
-@@ -105,12 +105,13 @@ export function descargarReporteCaja(
+@@ -105,12 +109,13 @@ export function descargarReporteCaja(
            <thead>
              <tr>
                <th>Cajero</th><th>Apertura</th><th>Cierre</th>
@@ -2638,17 +2932,17 @@ index 390ce2a..b7c7a28 100644
    const abonos = (data ?? []).map((a) => ({
      id: a.id,
 diff --git a/src/lib/contabilidad/queries.ts b/src/lib/contabilidad/queries.ts
-index ed9bfd8..e39b759 100644
+index ed9bfd8..890ea8e 100644
 --- a/src/lib/contabilidad/queries.ts
 +++ b/src/lib/contabilidad/queries.ts
-@@ -1,42 +1,54 @@
+@@ -1,42 +1,55 @@
  import "server-only";
  import { createClient } from "@/lib/supabase/server";
 -import { rangoDiasRD } from "@/lib/fecha-rd";
 +import { traerTodas } from "@/lib/supabase/paginar";
 +import { fechaRD, rangoDiasRD } from "@/lib/fecha-rd";
-+import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
-+import { sumarDesglose, totalTarjeta } from "@/lib/pagos";
++import { abonosDelRango, devolucionesDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
++import { centavos, sumarDesglose, totalTarjeta } from "@/lib/pagos";
  import type { ResumenContable, Gasto } from "./types";
  
  export async function getResumenContable(desde: string, hasta: string): Promise<ResumenContable> {
@@ -2673,7 +2967,7 @@ index ed9bfd8..e39b759 100644
 +  // Todas las filas del período (antes se cortaba en 1000 ventas) y las
 +  // ventas mixtas repartidas entre sus métodos.
 +  const rango = { desde: desdeISO, hasta: hastaISO };
-+  const [ventasRows, abonos, gastos, { data: items }] = await Promise.all([
++  const [ventasRows, abonos, gastos, { data: items }, devoluciones] = await Promise.all([
 +    ventasCompletadas(supabase, rango),
 +    abonosDelRango(supabase, rango),
 +    gastosDelRango(supabase, rango),
@@ -2694,6 +2988,7 @@ index ed9bfd8..e39b759 100644
 +        (v) => (v.venta_items ?? []) as { nombre_producto: string; cantidad: number; subtotal: number }[]
 +      ),
 +    })),
++    devolucionesDelRango(supabase, rango),
    ]);
  
 -  const ventasRows = ventas ?? [];
@@ -2723,7 +3018,7 @@ index ed9bfd8..e39b759 100644
      gastosPorCatMap.set(g.categoria_gasto, (gastosPorCatMap.get(g.categoria_gasto) ?? 0) + Number(g.monto));
    }
    const gastosPorCategoria = Array.from(gastosPorCatMap.entries())
-@@ -45,7 +57,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+@@ -45,7 +58,7 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
  
    const porDiaMap = new Map<string, number>();
    for (const v of ventasRows) {
@@ -2732,7 +3027,37 @@ index ed9bfd8..e39b759 100644
      porDiaMap.set(key, (porDiaMap.get(key) ?? 0) + Number(v.total));
    }
    const ventasPorDia = Array.from(porDiaMap.entries())
-@@ -83,13 +95,17 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+@@ -64,15 +77,24 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
+     .sort((a, b) => b.monto - a.monto)
+     .slice(0, 8);
+ 
+-  const ingresosReales = ventasTotal - porMetodo.fiado + abonosCobrados;
+-  const utilidad = ingresosReales - gastosTotal;
++  // Mismas reglas que el cierre de caja: las devoluciones pagadas en efectivo
++  // son dinero que salió; antes no se restaban y Contabilidad mostraba más
++  // de lo que realmente entró.
++  const devolucionesTotal = centavos(devoluciones.reduce((s, d) => s + d.total_devuelto, 0));
++  const devolucionesEfectivo = centavos(
++    devoluciones.filter((d) => d.metodo_devolucion === "efectivo").reduce((s, d) => s + d.total_devuelto, 0)
++  );
++  const ingresosReales = centavos(ventasTotal - porMetodo.fiado + abonosCobrados - devolucionesEfectivo);
++  const utilidad = centavos(ingresosReales - gastosTotal);
+ 
+   return {
+-    ventasTotal,
++    ventasTotal: centavos(ventasTotal),
+     numVentas: ventasRows.length,
+     porMetodo,
+-    abonosCobrados,
+-    gastosTotal,
++    abonosCobrados: centavos(abonosCobrados),
++    devolucionesTotal,
++    devolucionesEfectivo,
++    gastosTotal: centavos(gastosTotal),
+     ingresosReales,
+     utilidad,
+     ventasPorDia,
+@@ -83,13 +105,17 @@ export async function getResumenContable(desde: string, hasta: string): Promise<
  
  export async function getGastos(desde: string, hasta: string): Promise<Gasto[]> {
    const supabase = await createClient();
@@ -2757,6 +3082,42 @@ index ed9bfd8..e39b759 100644
  
    return (data ?? []).map((g) => ({
      id: g.id,
+diff --git a/src/lib/contabilidad/reportePdf.ts b/src/lib/contabilidad/reportePdf.ts
+index e06490a..e98f9e6 100644
+--- a/src/lib/contabilidad/reportePdf.ts
++++ b/src/lib/contabilidad/reportePdf.ts
+@@ -130,7 +130,7 @@ export function descargarReportePDF(
+           <div class="tarjeta">
+             <div class="label">Ingresos reales</div>
+             <div class="valor verde">${formatMoney(resumen.ingresosReales)}</div>
+-            <div class="subtitulo">ventas - fiado + abonos</div>
++            <div class="subtitulo">ventas - fiado + abonos - devoluciones en efectivo</div>
+           </div>
+           <div class="tarjeta">
+             <div class="label">Gastos</div>
+@@ -151,6 +151,8 @@ export function descargarReportePDF(
+           <tr><td>Transferencia</td><td class="right">${formatMoney(resumen.porMetodo.transferencia)}</td></tr>
+           <tr><td>Fiado</td><td class="right">${formatMoney(resumen.porMetodo.fiado)}</td></tr>
+           <tr><td>Abonos cobrados</td><td class="right">${formatMoney(resumen.abonosCobrados)}</td></tr>
++          <tr><td>Devoluciones (total)</td><td class="right">-${formatMoney(resumen.devolucionesTotal)}</td></tr>
++          <tr><td>Devoluciones pagadas en efectivo</td><td class="right">-${formatMoney(resumen.devolucionesEfectivo)}</td></tr>
+         </table>
+ 
+         <div class="grid2">
+diff --git a/src/lib/contabilidad/types.ts b/src/lib/contabilidad/types.ts
+index 5dac4cc..fcaaae2 100644
+--- a/src/lib/contabilidad/types.ts
++++ b/src/lib/contabilidad/types.ts
+@@ -5,6 +5,9 @@ export type ResumenContable = {
+   numVentas: number;
+   porMetodo: ResumenPorMetodo;
+   abonosCobrados: number;
++  /** Devoluciones del período (todas) y las que se pagaron en efectivo. */
++  devolucionesTotal: number;
++  devolucionesEfectivo: number;
+   gastosTotal: number;
+   ingresosReales: number;
+   utilidad: number;
 diff --git a/src/lib/dashboard/queries.ts b/src/lib/dashboard/queries.ts
 index e2d22ba..cbcc249 100644
 --- a/src/lib/dashboard/queries.ts
@@ -3227,7 +3588,7 @@ index a8e73a4..b4cd394 100644
    subtotal: number;
    total: number;
 diff --git a/src/lib/offline/sync.ts b/src/lib/offline/sync.ts
-index 7afebaa..2655c1f 100644
+index 7afebaa..b344fca 100644
 --- a/src/lib/offline/sync.ts
 +++ b/src/lib/offline/sync.ts
 @@ -17,6 +17,19 @@ export type ResultadoSync = {
@@ -3250,12 +3611,13 @@ index 7afebaa..2655c1f 100644
    if (sincronizando) return { sincronizadas: 0, conError: 0, restantes: 0 };
    if (typeof navigator !== "undefined" && !navigator.onLine) {
      return { sincronizadas: 0, conError: 0, restantes: (await listarVentasPendientes()).length };
-@@ -37,6 +50,8 @@ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
+@@ -37,6 +50,9 @@ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
            items: venta.items,
            clienteId: venta.clienteId,
            metodoPago: venta.metodoPago,
 +          tipoTarjeta: venta.tipoTarjeta ?? null,
 +          pagos: venta.pagos,
++          fechaOriginal: venta.fecha,
            descuento: venta.descuento,
            localId: venta.localId,
          });

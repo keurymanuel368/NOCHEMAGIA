@@ -27,7 +27,11 @@ export function descargarReporteCaja(
           <td>${new Date(c.abierta_at).toLocaleString("es-DO")}</td>
           <td>${c.cerrada_at ? new Date(c.cerrada_at).toLocaleString("es-DO") : "—"}</td>
           <td class="right">${formatMoney(c.monto_inicial)}</td>
-          <td class="right">${formatMoney(c.cuadre.ventaNeta)}</td>
+          <td class="right">${formatMoney(c.cuadre.ventaNeta)}${
+            c.cambios_posteriores
+              ? `<div style="font-size:10px;color:#b26a00">Cambió después del cierre: ventas ${formatMoney(c.cambios_posteriores.ventas)}, efectivo ${formatMoney(c.cambios_posteriores.efectivo)}</div>`
+              : ""
+          }</td>
           <td class="right">${formatMoney(c.efectivo_esperado)}</td>
           <td class="right">${c.monto_final !== null ? formatMoney(c.monto_final) : "—"}</td>
           <td class="right" style="color:${colorDif}">${diferencia !== null ? formatMoney(diferencia) : "—"}</td>

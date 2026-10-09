@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { Archive, X } from "lucide-react";
-import { abrirCajaAction, cerrarCajaAction } from "@/app/actions/pos-actions";
+import { abrirCajaAction, cerrarCajaAction, type CierreGuardado } from "@/app/actions/pos-actions";
 import { formatMoney } from "@/lib/money";
 import { useToast } from "@/components/ui/ToastProvider";
 import { imprimirCierreCaja } from "@/lib/pos/printCaja";
@@ -47,7 +47,7 @@ export function CajaModal({
       return;
     }
     startTransition(async () => {
-      const res =
+      const res: { error?: string; cierre?: CierreGuardado; avisoCierre?: string } =
         mode === "abrir" ? await abrirCajaAction(valor) : await cerrarCajaAction(valor);
       if (res.error) {
         setError(res.error);
@@ -57,14 +57,23 @@ export function CajaModal({
       toast.success(mode === "abrir" ? "Caja abierta" : "Caja cerrada");
 
       if (mode === "cerrar" && cuadre) {
+        // Se imprime el cuadre definitivo que calculó el servidor al cerrar
+        // (incluye ventas hechas mientras esta ventana estaba abierta).
+        const final = res.cierre;
+        if (res.avisoCierre) toast.error(res.avisoCierre);
+        if (final && final.diferencia !== Math.round((valor - (esperado ?? 0)) * 100) / 100) {
+          toast.error(
+            `Hubo movimientos mientras cerrabas: el efectivo esperado final es ${formatMoney(final.efectivoEsperado)}`
+          );
+        }
         // No se espera la impresión: el cajero no debe quedarse mirando.
         imprimirCierreCaja({
           negocioNombre,
           cajero: cuadre.cajero,
-          abiertaAt: cuadre.abiertaAt,
-          cerradaAt: new Date().toISOString(),
-          montoInicial: cuadre.montoInicial,
-          cuadre: cuadre.cuadre,
+          abiertaAt: final?.abiertaAt ?? cuadre.abiertaAt,
+          cerradaAt: final?.cerradaAt ?? new Date().toISOString(),
+          montoInicial: final?.montoInicial ?? cuadre.montoInicial,
+          cuadre: final?.cuadre ?? cuadre.cuadre,
           montoContado: valor,
         }).catch(() => {});
       }

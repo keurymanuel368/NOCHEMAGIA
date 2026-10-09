@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUsuarioActual } from "@/lib/get-usuario-actual";
 import { traerTodas } from "@/lib/supabase/paginar";
 import { rangoDiasRD, ZONA_NEGOCIO } from "@/lib/fecha-rd";
-import { abonosDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
+import { abonosDelRango, devolucionesDelRango, gastosDelRango, ventasCompletadas } from "@/lib/ventas/movimientos";
 import { sumarDesglose } from "@/lib/pagos";
 
 export type ReporteResultado = { columns: string[]; rows: (string | number)[][] };
@@ -159,10 +159,11 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
 
   // Todas las filas del período (Supabase corta cada consulta en 1000).
   const periodo = { desde: desdeISO, hasta: hastaISO };
-  const [ventas, abonos, gastos] = await Promise.all([
+  const [ventas, abonos, gastos, devoluciones] = await Promise.all([
     ventasCompletadas(supabase, periodo),
     abonosDelRango(supabase, periodo),
     gastosDelRango(supabase, periodo),
+    devolucionesDelRango(supabase, periodo),
   ]);
 
   const desglose = sumarDesglose(ventas);
@@ -170,7 +171,10 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
   const fiadoTotal = desglose.fiado;
   const abonosTotal = abonos.reduce((s, a) => s + a.monto, 0);
   const gastosTotal = gastos.reduce((s, g) => s + g.monto, 0);
-  const ingresosReales = ventasTotal - fiadoTotal + abonosTotal;
+  const devolucionesEfectivo = devoluciones
+    .filter((d) => d.metodo_devolucion === "efectivo")
+    .reduce((s, d) => s + d.total_devuelto, 0);
+  const ingresosReales = ventasTotal - fiadoTotal + abonosTotal - devolucionesEfectivo;
   const utilidad = ingresosReales - gastosTotal;
 
   return {
@@ -184,6 +188,7 @@ export async function reporteResumenEjecutivoAction(desde: string, hasta: string
       ["  Transferencia", desglose.transferencia.toFixed(2)],
       ["Ventas a fiado", fiadoTotal.toFixed(2)],
       ["Abonos cobrados", abonosTotal.toFixed(2)],
+      ["Devoluciones pagadas en efectivo", (-devolucionesEfectivo).toFixed(2)],
       ["Ingresos reales", ingresosReales.toFixed(2)],
       ["Gastos totales", gastosTotal.toFixed(2)],
       ["Utilidad", utilidad.toFixed(2)],

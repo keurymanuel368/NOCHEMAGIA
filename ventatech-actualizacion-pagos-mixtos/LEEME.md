@@ -1,5 +1,21 @@
 # VentaTech: pagos mixtos, cierre de caja detallado y dashboard corregido
 
+## Corrección: cierre de caja y contabilidad (números que aparecían y desaparecían)
+
+**Ejecuta `cierres-de-caja.sql`** en Supabase.
+
+| Qué pasaba | Ahora |
+| --- | --- |
+| El historial de caja recalculaba los turnos viejos cada vez que se abría. Si después se anulaba una venta, se borraba un gasto o llegaba una venta sin conexión, un turno **ya cerrado** cambiaba solo. | Al cerrar se guarda una **foto del cuadre** (tabla `caja_cierres`). El historial muestra esa foto. Si algo cambió después, lo dice aparte en amarillo: "Cambió después del cierre: ventas +RD$ X, efectivo +RD$ Y". |
+| Las ventas hechas **sin internet** se guardaban con la hora en que se sincronizaron. Si eso pasaba después de cerrar, caían en el turno siguiente: un turno con faltante y el otro con sobrante. | Se guardan con la **hora real en que se cobraron**. |
+| **Contabilidad no restaba las devoluciones** pagadas en efectivo (el cierre de caja sí). "Ingresos reales" y "Utilidad" salían más altos. | Se restan, igual que en caja y en el Resumen ejecutivo. |
+| Si una caja se quedaba abierta y se abría otra, la vieja seguía sumando las ventas de la nueva: aparecían en dos turnos. | La caja vieja termina donde empieza la siguiente. |
+| El ticket de cierre usaba el cuadre de cuando se abrió la ventana; si alguien vendía mientras tanto, no cuadraba. | Se imprime el cuadre final, calculado con la hora exacta de cierre. Si cambió, avisa. |
+
+Nota: Contabilidad cuenta por **día** (12:00 a. m. a 11:59 p. m.) y el cierre de caja por **turno**
+(de que se abre a que se cierra). Si un turno pasa de medianoche, los dos números no tienen que
+ser iguales.
+
 ## Nuevo: anular facturas (para limpiar las duplicadas)
 
 **Ejecuta `anular-facturas.sql`** en Supabase.

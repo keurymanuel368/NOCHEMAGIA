@@ -6,6 +6,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getCuadreCajaAbierta } from "@/lib/pos/queries";
 import { getUsuarioActual } from "@/lib/get-usuario-actual";
 import { esModoSoporteSuperAdmin } from "@/lib/modo-soporte";
+import { cuadreDelRango } from "@/lib/ventas/movimientos";
+import { efectivoEsperado, type CuadreTurno } from "@/lib/caja/cuadre";
 import type { MetodoPago, CartLine } from "@/lib/pos/types";
 import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
 
@@ -26,14 +28,77 @@ export async function abrirCajaAction(montoInicial: number): Promise<PosActionSt
   return { success: "Caja abierta" };
 }
 
-export async function cerrarCajaAction(montoFinal: number): Promise<PosActionState> {
+export type CierreGuardado = {
+  abiertaAt: string;
+  cerradaAt: string;
+  montoInicial: number;
+  montoContado: number;
+  efectivoEsperado: number;
+  diferencia: number;
+  cuadre: CuadreTurno;
+};
+
+export async function cerrarCajaAction(
+  montoFinal: number
+): Promise<PosActionState & { cierre?: CierreGuardado; avisoCierre?: string }> {
   const supabase = await createClient();
+  const { data: abiertas } = await supabase
+    .from("caja")
+    .select("id")
+    .eq("estado", "abierta")
+    .order("abierta_at", { ascending: false })
+    .limit(1);
+  const cajaId = abiertas?.[0]?.id as string | undefined;
+
   const { error } = await supabase.rpc("cerrar_caja", { p_monto_final: montoFinal });
   if (error) return { error: error.message };
   revalidatePath("/pos");
   revalidatePath("/caja");
   revalidatePath("/");
-  return { success: "Caja cerrada" };
+
+  // Cuadre definitivo, calculado con la hora exacta de cierre que guardó la
+  // base de datos. Es lo que se imprime y lo que queda guardado: el
+  // historial ya no lo recalcula (antes un turno cerrado cambiaba solo si
+  // después se anulaba una venta o se borraba un gasto).
+  if (!cajaId) return { success: "Caja cerrada" };
+  const { data: caja } = await supabase
+    .from("caja")
+    .select("abierta_at, cerrada_at, monto_inicial, monto_final")
+    .eq("id", cajaId)
+    .maybeSingle();
+  if (!caja?.cerrada_at) return { success: "Caja cerrada" };
+
+  const cuadre = await cuadreDelRango(supabase, { desde: caja.abierta_at, hasta: caja.cerrada_at, hastaIncluido: true });
+  const montoInicial = Number(caja.monto_inicial);
+  const contado = caja.monto_final === null ? montoFinal : Number(caja.monto_final);
+  const esperado = efectivoEsperado(montoInicial, cuadre);
+  const cierre: CierreGuardado = {
+    abiertaAt: caja.abierta_at,
+    cerradaAt: caja.cerrada_at,
+    montoInicial,
+    montoContado: contado,
+    efectivoEsperado: esperado,
+    diferencia: centavos(contado - esperado),
+    cuadre,
+  };
+
+  let avisoCierre: string | undefined;
+  try {
+    const { error: errorFoto } = await createAdminClient().from("caja_cierres").upsert({
+      caja_id: cajaId,
+      abierta_at: cierre.abiertaAt,
+      cerrada_at: cierre.cerradaAt,
+      monto_inicial: cierre.montoInicial,
+      efectivo_esperado: cierre.efectivoEsperado,
+      monto_contado: cierre.montoContado,
+      diferencia: cierre.diferencia,
+      cuadre: cierre.cuadre,
+    });
+    if (errorFoto) avisoCierre = "El cierre no se pudo guardar en el historial (falta ejecutar cierres-de-caja.sql).";
+  } catch {
+    avisoCierre = "El cierre no se pudo guardar en el historial.";
+  }
+  return { success: "Caja cerrada", cierre, avisoCierre };
 }
 
 export type ItemVentaInput = {
@@ -117,6 +182,8 @@ export async function registrarVentaAction(input: {
   tipoTarjeta?: TipoTarjeta | null;
   /** Solo para pago mixto: cuánto se pagó con cada método. */
   pagos?: PagoParte[];
+  /** Venta hecha sin conexión: hora real en que se cobró. */
+  fechaOriginal?: string | null;
 }): Promise<
   PosActionState & {
     ventaId?: string;
@@ -160,6 +227,7 @@ export async function registrarVentaAction(input: {
   });
 
   let ventaId = data as string;
+  let esNueva = !error;
   if (error) {
     // La misma venta llegó dos veces (reintento): la base de datos rechaza la
     // copia. Se devuelve la venta que ya existe en vez de dar error o cobrar
@@ -170,6 +238,26 @@ export async function registrarVentaAction(input: {
         : null;
     if (!existente) return { error: error.message };
     ventaId = existente.id as string;
+    esNueva = false;
+  }
+
+  // Venta hecha sin conexión: la base de datos le pone la hora en que se
+  // sincronizó. Si eso fue después de cerrar caja, la venta caía en el turno
+  // siguiente (un turno salía con faltante y el otro con sobrante). Se le
+  // devuelve la hora real en que se cobró.
+  if (esNueva && input.fechaOriginal) {
+    const original = Date.parse(input.fechaOriginal);
+    const ahora = Date.now();
+    if (!Number.isNaN(original) && original < ahora - 60_000 && original > ahora - 7 * 86_400_000) {
+      try {
+        await createAdminClient()
+          .from("ventas")
+          .update({ fecha: new Date(original).toISOString() })
+          .eq("id", ventaId);
+      } catch {
+        // Si no se puede, la venta queda con la hora de sincronización.
+      }
+    }
   }
 
   const [{ data: venta }, { data: items }] = await Promise.all([

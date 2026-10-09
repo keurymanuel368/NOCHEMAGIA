@@ -26,6 +26,13 @@ export type CajaSesion = {
   efectivo_esperado: number;
   /** Contado − esperado (positivo = sobrante, negativo = faltante). null si sigue abierta. */
   diferencia: number | null;
+  /** true si el cuadre viene de la foto guardada al cerrar (no se recalcula). */
+  cierre_guardado: boolean;
+  /**
+   * Lo que cambió en este turno DESPUÉS de cerrarlo (ventas anuladas, gastos
+   * borrados, ventas offline que llegaron tarde...). null si no cambió nada.
+   */
+  cambios_posteriores: { ventas: number; efectivo: number } | null;
   // Campos de antes, se mantienen para no romper nada.
   ventas_efectivo: number;
   num_ventas: number;
@@ -61,6 +68,8 @@ function armarSesion(c: FilaCaja, cuadre: CuadreTurno): CajaSesion {
     cuadre,
     efectivo_esperado: esperado,
     diferencia: montoFinal === null || c.estado === "abierta" ? null : centavos(montoFinal - esperado),
+    cierre_guardado: false,
+    cambios_posteriores: null,
     ventas_efectivo: cuadre.desglose.efectivo,
     num_ventas: cuadre.numVentas,
     ventas_total: cuadre.ventasTotal,
@@ -108,19 +117,50 @@ export async function getCajaHistorial(limit = 30): Promise<CajaSesion[]> {
     gastosDelRango(supabase, rango),
   ]);
 
+  // Fotos guardadas al cerrar (si ya se ejecutó cierres-de-caja.sql).
+  const { data: fotos } = await supabase
+    .from("caja_cierres")
+    .select("caja_id, efectivo_esperado, monto_contado, diferencia, cuadre")
+    .in("caja_id", cajas.map((c) => c.id));
+  const fotoPorCaja = new Map((fotos ?? []).map((f) => [f.caja_id as string, f]));
+
+  // Un turno sin cerrar que no es el último (caja que se quedó abierta y se
+  // abrió otra) termina donde empieza el siguiente: antes contaba todo lo
+  // posterior y esas ventas aparecían repetidas en dos turnos.
+  const ordenadas = [...cajas].sort((a, b) => Date.parse(a.abierta_at) - Date.parse(b.abierta_at));
+  const siguiente = new Map(ordenadas.map((c, i) => [c.id, ordenadas[i + 1]?.abierta_at ?? null]));
+
   return cajas.map((c) => {
     const inicio = Date.parse(c.abierta_at);
-    const fin = c.cerrada_at ? Date.parse(c.cerrada_at) : Number.POSITIVE_INFINITY;
+    const proxima = siguiente.get(c.id);
+    const fin = c.cerrada_at
+      ? Date.parse(c.cerrada_at)
+      : proxima
+        ? Date.parse(proxima) - 1
+        : Number.POSITIVE_INFINITY;
     const dentro = (fecha: string) => {
       const t = Date.parse(fecha);
       return t >= inicio && t <= fin;
     };
-    const cuadre = calcularCuadre({
+    const actual = calcularCuadre({
       ventas: ventas.filter((v) => dentro(v.fecha)),
       devoluciones: devoluciones.filter((d) => dentro(d.fecha)),
       abonos: abonos.filter((a) => dentro(a.fecha)),
       gastos: gastos.filter((g) => dentro(g.fecha)),
     });
-    return armarSesion(c, cuadre);
+
+    const foto = fotoPorCaja.get(c.id);
+    if (!foto) return armarSesion(c, actual);
+
+    // Turno cerrado con foto: se muestra lo que se cuadró al cerrar.
+    const guardado = foto.cuadre as CuadreTurno;
+    const sesion = armarSesion(c, guardado);
+    sesion.efectivo_esperado = Number(foto.efectivo_esperado);
+    sesion.diferencia = Number(foto.diferencia);
+    sesion.cierre_guardado = true;
+    const dv = centavos(actual.ventaNeta - guardado.ventaNeta);
+    const de = centavos(actual.efectivoNeto - guardado.efectivoNeto);
+    sesion.cambios_posteriores = dv !== 0 || de !== 0 ? { ventas: dv, efectivo: de } : null;
+    return sesion;
   });
 }

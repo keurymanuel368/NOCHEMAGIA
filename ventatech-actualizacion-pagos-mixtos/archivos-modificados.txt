@@ -4,6 +4,7 @@ src/app/page.tsx
 src/components/caja/CajaClient.tsx
 src/components/clientes/AbonosTab.tsx
 src/components/clientes/DeudasTab.tsx
+src/components/contabilidad/ResumenTab.tsx
 src/components/dashboard/SalesChart.tsx
 src/components/dashboard/UltimasVentasTable.tsx
 src/components/pos/BotonCopiaFactura.tsx
@@ -17,6 +18,8 @@ src/lib/caja/queries.ts
 src/lib/caja/reportePdf.ts
 src/lib/clientes/queries.ts
 src/lib/contabilidad/queries.ts
+src/lib/contabilidad/reportePdf.ts
+src/lib/contabilidad/types.ts
 src/lib/dashboard/queries.ts
 src/lib/devoluciones/queries.ts
 src/lib/fecha-rd.ts

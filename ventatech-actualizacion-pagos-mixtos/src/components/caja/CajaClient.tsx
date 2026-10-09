@@ -204,6 +204,17 @@ export function CajaClient({
                     </td>
                     <td className="px-4 py-3 font-mono text-sm text-vt-text2">
                       {formatMoney(c.cuadre.ventaNeta)}
+                      {c.cambios_posteriores && (
+                        <div
+                          className="mt-0.5 font-sans text-[11px] font-semibold text-vt-amber"
+                          title="Después de cerrar se anularon ventas, se borraron gastos o llegaron ventas sin conexión. El cuadre de arriba es el que se hizo al cerrar."
+                        >
+                          Cambió después del cierre: ventas {c.cambios_posteriores.ventas >= 0 ? "+" : "−"}
+                          {formatMoney(Math.abs(c.cambios_posteriores.ventas))}, efectivo{" "}
+                          {c.cambios_posteriores.efectivo >= 0 ? "+" : "−"}
+                          {formatMoney(Math.abs(c.cambios_posteriores.efectivo))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 font-mono text-sm text-vt-text2">
                       {formatMoney(c.efectivo_esperado)}
