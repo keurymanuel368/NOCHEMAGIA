@@ -17,6 +17,19 @@ export type ResultadoSync = {
  * error de red: si falla, se queda en la cola para el próximo intento.
  */
 export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
+  // Si el POS está abierto en dos pestañas, solo una sincroniza a la vez:
+  // así la misma venta pendiente no se manda dos veces al mismo tiempo.
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  if (locks) {
+    const r = await locks.request("vt-sync-ventas", { ifAvailable: true }, async (lock) =>
+      lock ? sincronizarSinBloqueo() : null
+    );
+    return r ?? { sincronizadas: 0, conError: 0, restantes: (await listarVentasPendientes()).length };
+  }
+  return sincronizarSinBloqueo();
+}
+
+async function sincronizarSinBloqueo(): Promise<ResultadoSync> {
   if (sincronizando) return { sincronizadas: 0, conError: 0, restantes: 0 };
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     return { sincronizadas: 0, conError: 0, restantes: (await listarVentasPendientes()).length };

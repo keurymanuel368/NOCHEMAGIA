@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import { Banknote, CreditCard, ArrowLeftRight, HandCoins, X, Check, FileText, Layers } from "lucide-react";
 import type { MetodoPago } from "@/lib/pos/types";
 import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
@@ -95,6 +95,7 @@ export function PaymentModal({
   const [ncfTipo, setNcfTipo] = useState<TipoNCF | "">("");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const enviando = useRef(false);
   const toast = useToast();
 
   const recibido = Number(montoRecibido) || 0;
@@ -134,6 +135,8 @@ export function PaymentModal({
   }
 
   function confirmar() {
+    // Doble clic o Enter repetido: el segundo se ignora mientras el primero sigue.
+    if (enviando.current || pending) return;
     if (metodo === "fiado" && requiereCliente) {
       setError("Selecciona un cliente para venta a fiado");
       return;
@@ -171,8 +174,11 @@ export function PaymentModal({
       pago = { metodo };
     }
 
+    enviando.current = true;
     startTransition(async () => {
-      const res = await onConfirmar(pago, ncfTipo || null);
+      const res = await onConfirmar(pago, ncfTipo || null).finally(() => {
+        enviando.current = false;
+      });
       if (res.error) {
         setError(res.error);
         toast.error(res.error);

@@ -3,10 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getCuadreCajaAbierta } from "@/lib/pos/queries";
 import type { MetodoPago, CartLine } from "@/lib/pos/types";
 import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
 
 export type PosActionState = { error?: string; success?: string };
+
+/** Cuadre del turno abierto, para la ventana de cierre del POS. */
+export async function obtenerCuadreCajaAction() {
+  return getCuadreCajaAbierta();
+}
 
 export async function abrirCajaAction(montoInicial: number): Promise<PosActionState> {
   const supabase = await createClient();
@@ -151,8 +157,18 @@ export async function registrarVentaAction(input: {
     p_local_id: input.localId || null,
   });
 
-  if (error) return { error: error.message };
-  const ventaId = data as string;
+  let ventaId = data as string;
+  if (error) {
+    // La misma venta llegó dos veces (reintento): la base de datos rechaza la
+    // copia. Se devuelve la venta que ya existe en vez de dar error o cobrar
+    // otra vez.
+    const existente =
+      error.code === "23505" && input.localId
+        ? (await supabase.from("ventas").select("id").eq("local_id", input.localId).maybeSingle()).data
+        : null;
+    if (!existente) return { error: error.message };
+    ventaId = existente.id as string;
+  }
 
   const [{ data: venta }, { data: items }] = await Promise.all([
     supabase
@@ -179,7 +195,11 @@ export async function registrarVentaAction(input: {
     }
   }
 
-  revalidatePath("/pos");
+  // No se revalida "/pos": eso hacía que la respuesta de CADA venta esperara
+  // a recargar toda la pantalla del POS (todos los productos, la caja...).
+  // Con internet lento la función se cortaba después de guardar la venta,
+  // el POS creía que había fallado y la volvía a mandar: factura doble.
+  // El POS refresca sus datos solo, en segundo plano, después de cobrar.
   revalidatePath("/");
   revalidatePath("/caja");
   return {

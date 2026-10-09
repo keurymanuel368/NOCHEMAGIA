@@ -47,9 +47,25 @@ export async function getClientesActivos(): Promise<Cliente[]> {
   return (data ?? []) as Cliente[];
 }
 
-// Misma cuenta que la pantalla de Caja (ventas por método, abonos,
-// devoluciones y gastos del turno), para que el cierre desde el POS cuadre
-// igual que desde Caja.
-export async function getCajaAbierta() {
+export type CajaAbiertaPOS = { id: string; monto_inicial: number; abierta_at: string } | null;
+
+// Solo saber si hay caja abierta: el POS se recarga después de cada venta y
+// calcular aquí el cuadre completo (ventas, abonos, devoluciones, gastos)
+// lo hacía lento. El cuadre se pide al abrir la ventana de cierre.
+export async function getCajaAbierta(): Promise<CajaAbiertaPOS> {
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("caja")
+    .select("id, monto_inicial, abierta_at")
+    .eq("estado", "abierta")
+    .order("abierta_at", { ascending: false })
+    .limit(1);
+  const c = data?.[0];
+  return c ? { id: c.id, monto_inicial: Number(c.monto_inicial), abierta_at: c.abierta_at } : null;
+}
+
+// Misma cuenta que la pantalla de Caja, para que el cierre desde el POS
+// cuadre igual que desde Caja.
+export async function getCuadreCajaAbierta() {
   return getCajaActual();
 }

@@ -1,16 +1,18 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Wallet, ShoppingCart, ShoppingBag, ClipboardList, PauseCircle } from "lucide-react";
 import type { UsuarioProfile } from "@/lib/auth";
 import type { Cliente, Producto, CartLine } from "@/lib/pos/types";
 import { lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
 import type { CajaSesion } from "@/lib/caja/queries";
+import type { CajaAbiertaPOS } from "@/lib/pos/queries";
 import { precioEfectivo, esUnidadEntera } from "@/lib/pos/types";
 import type { TipoNCF } from "@/lib/fiscal/types";
 import {
   registrarVentaAction,
+  obtenerCuadreCajaAction,
   aparcarVentaAction,
   listarVentasAparcadasAction,
   eliminarVentaAparcadaAction,
@@ -42,7 +44,7 @@ import { AparcarVentaModal } from "./AparcarVentaModal";
 import { VentasAparcadasModal } from "./VentasAparcadasModal";
 import { HistorialTab } from "./HistorialTab";
 
-type CajaInfo = CajaSesion | null;
+type CajaInfo = CajaAbiertaPOS;
 
 export function POSClient({
   usuario,
@@ -236,7 +238,39 @@ export function POSClient({
     setCarrito((prev) => prev.filter((i) => i.key !== key));
   }
 
+  // Un solo id por cobro: si el cajero vuelve a intentar el MISMO carrito
+  // (doble clic, respuesta lenta, error de red), se manda el mismo id y el
+  // servidor devuelve la venta ya creada en vez de cobrarla otra vez. Se
+  // renueva solo cuando cambia el carrito o se termina la venta.
+  const idCobro = useRef<string | null>(null);
+  const cobrando = useRef(false);
+  useEffect(() => {
+    idCobro.current = null;
+  }, [carrito, cliente, descuento, cuponAplicado]);
+
+  // El cuadre para cerrar caja se calcula en el momento (no en cada recarga).
+  const [cuadreCierre, setCuadreCierre] = useState<CajaSesion | null>(null);
+  async function abrirModalCaja() {
+    if (!cajaAbierta) {
+      setCajaModal("abrir");
+      return;
+    }
+    try {
+      const cuadre = await obtenerCuadreCajaAction();
+      if (!cuadre) {
+        toast.error("No se encontró la caja abierta");
+        router.refresh();
+        return;
+      }
+      setCuadreCierre(cuadre);
+      setCajaModal("cerrar");
+    } catch {
+      toast.error("No se pudo calcular el cuadre de caja. Revisa la conexión.");
+    }
+  }
+
   function limpiarCarrito() {
+    idCobro.current = null;
     setCarrito([]);
     setDescuento(0);
     setCuponAplicado(null);
@@ -337,13 +371,25 @@ export function POSClient({
   }
 
   async function confirmarPago(pago: PagoSeleccionado, ncfTipo?: TipoNCF | null) {
+    // Mientras una venta se está procesando no se acepta otra.
+    if (cobrando.current) return { error: "La venta ya se está procesando, espera un momento" };
+    cobrando.current = true;
+    try {
+      return await procesarPago(pago, ncfTipo);
+    } finally {
+      cobrando.current = false;
+    }
+  }
+
+  async function procesarPago(pago: PagoSeleccionado, ncfTipo?: TipoNCF | null) {
     const metodo = pago.metodo;
     const montoRecibido = pago.montoRecibido;
     // Un solo id por intento de cobro: si la venta llega a completarse en el
     // servidor pero la respuesta se pierde (wifi inestable), el reintento
     // offline usa el mismo id y el servidor devuelve la venta ya creada en
     // vez de duplicarla.
-    const ventaLocalId = crypto.randomUUID();
+    if (!idCobro.current) idCobro.current = crypto.randomUUID();
+    const ventaLocalId = idCobro.current;
     const items: ItemVentaInput[] = carrito.map((i) => ({
       producto_id: i.producto_id,
       nombre: i.producto_id ? undefined : i.nombre,
@@ -494,7 +540,7 @@ export function POSClient({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <POSTopBar
           cajaAbierta={cajaAbierta}
-          onCajaClick={() => setCajaModal(cajaAbierta ? "cerrar" : "abrir")}
+          onCajaClick={abrirModalCaja}
           onPrinterClick={() => setImpresoraAbierta(true)}
         />
 
@@ -662,12 +708,12 @@ export function POSClient({
         <CajaModal
           mode={cajaModal}
           cuadre={
-            cajaModal === "cerrar" && cajaInicial
+            cajaModal === "cerrar" && cuadreCierre
               ? {
-                  montoInicial: cajaInicial.monto_inicial,
-                  cuadre: cajaInicial.cuadre,
+                  montoInicial: cuadreCierre.monto_inicial,
+                  cuadre: cuadreCierre.cuadre,
                   cajero: usuario.nombre,
-                  abiertaAt: cajaInicial.abierta_at,
+                  abiertaAt: cuadreCierre.abierta_at,
                 }
               : undefined
           }

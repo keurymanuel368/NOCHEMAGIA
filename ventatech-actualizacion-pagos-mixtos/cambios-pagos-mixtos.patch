@@ -69,20 +69,27 @@ index 0000000..0009a9f
 +  end if;
 +end $$;
 diff --git a/src/app/actions/pos-actions.ts b/src/app/actions/pos-actions.ts
-index b88225f..0fc219c 100644
+index b88225f..851d1bb 100644
 --- a/src/app/actions/pos-actions.ts
 +++ b/src/app/actions/pos-actions.ts
-@@ -2,7 +2,9 @@
+@@ -2,15 +2,25 @@
  
  import { revalidatePath } from "next/cache";
  import { createClient } from "@/lib/supabase/server";
 +import { createAdminClient } from "@/lib/supabase/admin";
++import { getCuadreCajaAbierta } from "@/lib/pos/queries";
  import type { MetodoPago, CartLine } from "@/lib/pos/types";
 +import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
  
  export type PosActionState = { error?: string; success?: string };
  
-@@ -11,6 +13,8 @@ export async function abrirCajaAction(montoInicial: number): Promise<PosActionSt
++/** Cuadre del turno abierto, para la ventana de cierre del POS. */
++export async function obtenerCuadreCajaAction() {
++  return getCuadreCajaAbierta();
++}
++
+ export async function abrirCajaAction(montoInicial: number): Promise<PosActionState> {
+   const supabase = await createClient();
    const { error } = await supabase.rpc("abrir_caja", { p_monto_inicial: montoInicial });
    if (error) return { error: error.message };
    revalidatePath("/pos");
@@ -91,7 +98,7 @@ index b88225f..0fc219c 100644
    return { success: "Caja abierta" };
  }
  
-@@ -19,6 +23,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
+@@ -19,6 +29,8 @@ export async function cerrarCajaAction(montoFinal: number): Promise<PosActionSta
    const { error } = await supabase.rpc("cerrar_caja", { p_monto_final: montoFinal });
    if (error) return { error: error.message };
    revalidatePath("/pos");
@@ -100,7 +107,7 @@ index b88225f..0fc219c 100644
    return { success: "Caja cerrada" };
  }
  
-@@ -29,6 +35,68 @@ export type ItemVentaInput = {
+@@ -29,6 +41,68 @@ export type ItemVentaInput = {
    cantidad: number;
  };
  
@@ -169,7 +176,7 @@ index b88225f..0fc219c 100644
  export async function registrarVentaAction(input: {
    items: ItemVentaInput[];
    clienteId: string | null;
-@@ -37,6 +105,10 @@ export async function registrarVentaAction(input: {
+@@ -37,6 +111,10 @@ export async function registrarVentaAction(input: {
    ncfTipo?: string | null;
    cuponId?: string | null;
    localId?: string | null;
@@ -180,7 +187,7 @@ index b88225f..0fc219c 100644
  }): Promise<
    PosActionState & {
      ventaId?: string;
-@@ -47,13 +119,32 @@ export async function registrarVentaAction(input: {
+@@ -47,21 +125,50 @@ export async function registrarVentaAction(input: {
      descuento?: number;
      total?: number;
      items?: { nombre: string; cantidad: number; subtotal: number }[];
@@ -214,10 +221,31 @@ index b88225f..0fc219c 100644
      p_descuento: input.descuento,
      p_ncf_tipo: input.ncfTipo || null,
      p_cupon_id: input.cuponId || null,
-@@ -75,8 +166,22 @@ export async function registrarVentaAction(input: {
+     p_local_id: input.localId || null,
+   });
+ 
+-  if (error) return { error: error.message };
+-  const ventaId = data as string;
++  let ventaId = data as string;
++  if (error) {
++    // La misma venta llegó dos veces (reintento): la base de datos rechaza la
++    // copia. Se devuelve la venta que ya existe en vez de dar error o cobrar
++    // otra vez.
++    const existente =
++      error.code === "23505" && input.localId
++        ? (await supabase.from("ventas").select("id").eq("local_id", input.localId).maybeSingle()).data
++        : null;
++    if (!existente) return { error: error.message };
++    ventaId = existente.id as string;
++  }
+ 
+   const [{ data: venta }, { data: items }] = await Promise.all([
+     supabase
+@@ -75,8 +182,26 @@ export async function registrarVentaAction(input: {
        .eq("venta_id", ventaId),
    ]);
  
+-  revalidatePath("/pos");
 +  let pagos: PagoParte[] | undefined;
 +  let avisoPagos: string | undefined;
 +  if (venta && (esMixto || input.metodoPago === "tarjeta")) {
@@ -231,13 +259,17 @@ index b88225f..0fc219c 100644
 +    }
 +  }
 +
-   revalidatePath("/pos");
++  // No se revalida "/pos": eso hacía que la respuesta de CADA venta esperara
++  // a recargar toda la pantalla del POS (todos los productos, la caja...).
++  // Con internet lento la función se cortaba después de guardar la venta,
++  // el POS creía que había fallado y la volvía a mandar: factura doble.
++  // El POS refresca sus datos solo, en segundo plano, después de cobrar.
    revalidatePath("/");
 +  revalidatePath("/caja");
    return {
      success: "Venta registrada",
      ventaId,
-@@ -91,6 +196,8 @@ export async function registrarVentaAction(input: {
+@@ -91,6 +216,8 @@ export async function registrarVentaAction(input: {
        cantidad: Number(i.cantidad),
        subtotal: Number(i.subtotal),
      })),
@@ -1098,10 +1130,14 @@ index 12bf428..adc0107 100644
                      <span className="ml-1 font-semibold capitalize text-vt-red">· {v.estado}</span>
                    )}
 diff --git a/src/components/pos/POSClient.tsx b/src/components/pos/POSClient.tsx
-index 8c775e8..7face04 100644
+index 8c775e8..712723d 100644
 --- a/src/components/pos/POSClient.tsx
 +++ b/src/components/pos/POSClient.tsx
-@@ -4,7 +4,9 @@ import { useCallback, useMemo, useState } from "react";
+@@ -1,14 +1,18 @@
+ "use client";
+ 
+-import { useCallback, useMemo, useState } from "react";
++import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  import { useRouter } from "next/navigation";
  import { Wallet, ShoppingCart, ShoppingBag, ClipboardList, PauseCircle } from "lucide-react";
  import type { UsuarioProfile } from "@/lib/auth";
@@ -1109,10 +1145,16 @@ index 8c775e8..7face04 100644
 +import type { Cliente, Producto, CartLine } from "@/lib/pos/types";
 +import { lineasPago, textoMetodoPago, type PagoParte } from "@/lib/pagos";
 +import type { CajaSesion } from "@/lib/caja/queries";
++import type { CajaAbiertaPOS } from "@/lib/pos/queries";
  import { precioEfectivo, esUnidadEntera } from "@/lib/pos/types";
  import type { TipoNCF } from "@/lib/fiscal/types";
  import {
-@@ -33,20 +35,14 @@ import { CustomerPicker } from "./CustomerPicker";
+   registrarVentaAction,
++  obtenerCuadreCajaAction,
+   aparcarVentaAction,
+   listarVentasAparcadasAction,
+   eliminarVentaAparcadaAction,
+@@ -33,20 +37,14 @@ import { CustomerPicker } from "./CustomerPicker";
  import { CartPanel } from "./CartPanel";
  import { CheckoutSummaryBar } from "./CheckoutSummaryBar";
  import { CajaModal } from "./CajaModal";
@@ -1131,22 +1173,80 @@ index 8c775e8..7face04 100644
 -  ventas_efectivo: number;
 -  ventas_total: number;
 -} | null;
-+type CajaInfo = CajaSesion | null;
++type CajaInfo = CajaAbiertaPOS;
  
  export function POSClient({
    usuario,
-@@ -340,7 +336,9 @@ export function POSClient({
+@@ -240,7 +238,39 @@ export function POSClient({
+     setCarrito((prev) => prev.filter((i) => i.key !== key));
+   }
+ 
++  // Un solo id por cobro: si el cajero vuelve a intentar el MISMO carrito
++  // (doble clic, respuesta lenta, error de red), se manda el mismo id y el
++  // servidor devuelve la venta ya creada en vez de cobrarla otra vez. Se
++  // renueva solo cuando cambia el carrito o se termina la venta.
++  const idCobro = useRef<string | null>(null);
++  const cobrando = useRef(false);
++  useEffect(() => {
++    idCobro.current = null;
++  }, [carrito, cliente, descuento, cuponAplicado]);
++
++  // El cuadre para cerrar caja se calcula en el momento (no en cada recarga).
++  const [cuadreCierre, setCuadreCierre] = useState<CajaSesion | null>(null);
++  async function abrirModalCaja() {
++    if (!cajaAbierta) {
++      setCajaModal("abrir");
++      return;
++    }
++    try {
++      const cuadre = await obtenerCuadreCajaAction();
++      if (!cuadre) {
++        toast.error("No se encontró la caja abierta");
++        router.refresh();
++        return;
++      }
++      setCuadreCierre(cuadre);
++      setCajaModal("cerrar");
++    } catch {
++      toast.error("No se pudo calcular el cuadre de caja. Revisa la conexión.");
++    }
++  }
++
+   function limpiarCarrito() {
++    idCobro.current = null;
+     setCarrito([]);
+     setDescuento(0);
+     setCuponAplicado(null);
+@@ -340,12 +370,26 @@ export function POSClient({
      setVentasAparcadas((prev) => prev.filter((v) => v.id !== id));
    }
  
 -  async function confirmarPago(metodo: MetodoPago, montoRecibido?: number, ncfTipo?: TipoNCF | null) {
 +  async function confirmarPago(pago: PagoSeleccionado, ncfTipo?: TipoNCF | null) {
++    // Mientras una venta se está procesando no se acepta otra.
++    if (cobrando.current) return { error: "La venta ya se está procesando, espera un momento" };
++    cobrando.current = true;
++    try {
++      return await procesarPago(pago, ncfTipo);
++    } finally {
++      cobrando.current = false;
++    }
++  }
++
++  async function procesarPago(pago: PagoSeleccionado, ncfTipo?: TipoNCF | null) {
 +    const metodo = pago.metodo;
 +    const montoRecibido = pago.montoRecibido;
      // Un solo id por intento de cobro: si la venta llega a completarse en el
      // servidor pero la respuesta se pierde (wifi inestable), el reintento
      // offline usa el mismo id y el servidor devuelve la venta ya creada en
-@@ -363,6 +361,7 @@ export function POSClient({
+     // vez de duplicarla.
+-    const ventaLocalId = crypto.randomUUID();
++    if (!idCobro.current) idCobro.current = crypto.randomUUID();
++    const ventaLocalId = idCobro.current;
+     const items: ItemVentaInput[] = carrito.map((i) => ({
+       producto_id: i.producto_id,
+       nombre: i.producto_id ? undefined : i.nombre,
+@@ -363,6 +407,7 @@ export function POSClient({
          descuento: number;
          total: number;
          items: { nombre: string; cantidad: number; subtotal: number }[];
@@ -1154,7 +1254,7 @@ index 8c775e8..7face04 100644
        }
      ) {
        // Si el servidor confirmó los montos finales (pueden diferir de lo que
-@@ -370,10 +369,20 @@ export function POSClient({
+@@ -370,10 +415,20 @@ export function POSClient({
        // cobrar), el ticket se imprime con esos valores, no con el carrito
        // local. En modo offline no hay confirmación todavía: se usa el
        // carrito local y ya, sin retrasar la venta ni pedir nada al cajero.
@@ -1179,7 +1279,7 @@ index 8c775e8..7face04 100644
        imprimirFactura({
          negocioNombre,
          numeroFactura,
-@@ -381,7 +390,11 @@ export function POSClient({
+@@ -381,7 +436,11 @@ export function POSClient({
          fecha,
          cajero: usuario.nombre,
          cliente: clienteNombre,
@@ -1192,7 +1292,7 @@ index 8c775e8..7face04 100644
          items:
            confirmado?.items ??
            carrito.map((i) => ({
-@@ -392,7 +405,7 @@ export function POSClient({
+@@ -392,7 +451,7 @@ export function POSClient({
          subtotal: confirmado?.subtotal ?? subtotal,
          descuento: confirmado?.descuento ?? descuentoTotal,
          total: confirmado?.total ?? total,
@@ -1201,7 +1301,7 @@ index 8c775e8..7face04 100644
          cambio: cambioImpreso,
        }).catch(() => {});
      }
-@@ -407,6 +420,8 @@ export function POSClient({
+@@ -407,6 +466,8 @@ export function POSClient({
          clienteId: cliente?.id ?? null,
          clienteNombre,
          metodoPago: metodo,
@@ -1210,7 +1310,7 @@ index 8c775e8..7face04 100644
          descuento: descuentoTotal,
          subtotal,
          total,
-@@ -434,6 +449,8 @@ export function POSClient({
+@@ -434,6 +495,8 @@ export function POSClient({
          items,
          clienteId: cliente?.id ?? null,
          metodoPago: metodo,
@@ -1219,7 +1319,7 @@ index 8c775e8..7face04 100644
          // Solo el descuento manual: si hay cupón, el servidor recalcula su
          // monto internamente en vez de confiar en lo que mande el navegador.
          descuento,
-@@ -450,7 +467,7 @@ export function POSClient({
+@@ -450,7 +513,7 @@ export function POSClient({
            res.fecha,
            res.ncf,
            res.subtotal !== undefined && res.descuento !== undefined && res.total !== undefined && res.items
@@ -1228,7 +1328,7 @@ index 8c775e8..7face04 100644
              : undefined
          );
        }
-@@ -459,7 +476,7 @@ export function POSClient({
+@@ -459,7 +522,7 @@ export function POSClient({
        limpiarCarrito();
        setPagoAbierto(false);
        router.refresh();
@@ -1237,25 +1337,43 @@ index 8c775e8..7face04 100644
      } catch {
        // El navegador decía "en línea" pero la petición no llegó (wifi sin
        // internet, red inestable, etc.): se cobra igual y se guarda para
-@@ -648,8 +665,7 @@ export function POSClient({
-             cajaModal === "cerrar" && cajaInicial
+@@ -477,7 +540,7 @@ export function POSClient({
+       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+         <POSTopBar
+           cajaAbierta={cajaAbierta}
+-          onCajaClick={() => setCajaModal(cajaAbierta ? "cerrar" : "abrir")}
++          onCajaClick={abrirModalCaja}
+           onPrinterClick={() => setImpresoraAbierta(true)}
+         />
+ 
+@@ -645,13 +708,12 @@ export function POSClient({
+         <CajaModal
+           mode={cajaModal}
+           cuadre={
+-            cajaModal === "cerrar" && cajaInicial
++            cajaModal === "cerrar" && cuadreCierre
                ? {
-                   montoInicial: cajaInicial.monto_inicial,
+-                  montoInicial: cajaInicial.monto_inicial,
 -                  ventasEfectivo: cajaInicial.ventas_efectivo,
 -                  ventasTotal: cajaInicial.ventas_total,
-+                  cuadre: cajaInicial.cuadre,
++                  montoInicial: cuadreCierre.monto_inicial,
++                  cuadre: cuadreCierre.cuadre,
                    cajero: usuario.nombre,
-                   abiertaAt: cajaInicial.abierta_at,
+-                  abiertaAt: cajaInicial.abierta_at,
++                  abiertaAt: cuadreCierre.abierta_at,
                  }
+               : undefined
+           }
 diff --git a/src/components/pos/PaymentModal.tsx b/src/components/pos/PaymentModal.tsx
-index 9d95aef..ab1d5d4 100644
+index 9d95aef..8b118e6 100644
 --- a/src/components/pos/PaymentModal.tsx
 +++ b/src/components/pos/PaymentModal.tsx
 @@ -1,8 +1,9 @@
  "use client";
  
- import { useMemo, useState, useTransition } from "react";
+-import { useMemo, useState, useTransition } from "react";
 -import { Banknote, CreditCard, ArrowLeftRight, HandCoins, X, Check, FileText } from "lucide-react";
++import { useMemo, useRef, useState, useTransition } from "react";
 +import { Banknote, CreditCard, ArrowLeftRight, HandCoins, X, Check, FileText, Layers } from "lucide-react";
  import type { MetodoPago } from "@/lib/pos/types";
 +import { centavos, type PagoParte, type TipoTarjeta } from "@/lib/pagos";
@@ -1312,7 +1430,7 @@ index 9d95aef..ab1d5d4 100644
  const DENOMINACIONES = [50, 100, 200, 500, 1000, 2000];
  
  function billetesSugeridos(total: number): number[] {
-@@ -41,23 +83,56 @@ export function PaymentModal({
+@@ -41,24 +83,60 @@ export function PaymentModal({
    tiposNcfDisponibles: TipoNCF[];
    onClose: () => void;
    onConfirmar: (
@@ -1331,6 +1449,7 @@ index 9d95aef..ab1d5d4 100644
    const [ncfTipo, setNcfTipo] = useState<TipoNCF | "">("");
    const [error, setError] = useState<string | null>(null);
    const [pending, startTransition] = useTransition();
++  const enviando = useRef(false);
    const toast = useToast();
  
    const recibido = Number(montoRecibido) || 0;
@@ -1372,9 +1491,12 @@ index 9d95aef..ab1d5d4 100644
 +  }
 +
    function confirmar() {
++    // Doble clic o Enter repetido: el segundo se ignora mientras el primero sigue.
++    if (enviando.current || pending) return;
      if (metodo === "fiado" && requiereCliente) {
        setError("Selecciona un cliente para venta a fiado");
-@@ -67,13 +142,37 @@ export function PaymentModal({
+       return;
+@@ -67,13 +145,40 @@ export function PaymentModal({
        setError("El monto recibido es menor al total");
        return;
      }
@@ -1412,12 +1534,15 @@ index 9d95aef..ab1d5d4 100644
 +      pago = { metodo };
 +    }
 +
++    enviando.current = true;
 +    startTransition(async () => {
-+      const res = await onConfirmar(pago, ncfTipo || null);
++      const res = await onConfirmar(pago, ncfTipo || null).finally(() => {
++        enviando.current = false;
++      });
        if (res.error) {
          setError(res.error);
          toast.error(res.error);
-@@ -84,12 +183,13 @@ export function PaymentModal({
+@@ -84,12 +189,13 @@ export function PaymentModal({
            ? "Venta guardada sin conexión: se sincronizará automáticamente"
            : "Venta registrada correctamente"
        );
@@ -1432,7 +1557,7 @@ index 9d95aef..ab1d5d4 100644
          <div className="mb-4 flex items-center justify-between">
            <h2 className="flex items-center gap-2 text-base font-semibold text-neutral-900 dark:text-white">
              💰 Confirmar Cobro
-@@ -109,12 +209,12 @@ export function PaymentModal({
+@@ -109,12 +215,12 @@ export function PaymentModal({
          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
            Método de pago
          </div>
@@ -1448,7 +1573,7 @@ index 9d95aef..ab1d5d4 100644
                  metodo === id
                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
                    : "border-neutral-200 text-neutral-600 hover:bg-neutral-50 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/5"
-@@ -126,6 +226,133 @@ export function PaymentModal({
+@@ -126,6 +232,133 @@ export function PaymentModal({
            ))}
          </div>
  
@@ -2741,10 +2866,30 @@ index a8e73a4..b4cd394 100644
    subtotal: number;
    total: number;
 diff --git a/src/lib/offline/sync.ts b/src/lib/offline/sync.ts
-index 7afebaa..7738ca6 100644
+index 7afebaa..2655c1f 100644
 --- a/src/lib/offline/sync.ts
 +++ b/src/lib/offline/sync.ts
-@@ -37,6 +37,8 @@ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
+@@ -17,6 +17,19 @@ export type ResultadoSync = {
+  * error de red: si falla, se queda en la cola para el próximo intento.
+  */
+ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
++  // Si el POS está abierto en dos pestañas, solo una sincroniza a la vez:
++  // así la misma venta pendiente no se manda dos veces al mismo tiempo.
++  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
++  if (locks) {
++    const r = await locks.request("vt-sync-ventas", { ifAvailable: true }, async (lock) =>
++      lock ? sincronizarSinBloqueo() : null
++    );
++    return r ?? { sincronizadas: 0, conError: 0, restantes: (await listarVentasPendientes()).length };
++  }
++  return sincronizarSinBloqueo();
++}
++
++async function sincronizarSinBloqueo(): Promise<ResultadoSync> {
+   if (sincronizando) return { sincronizadas: 0, conError: 0, restantes: 0 };
+   if (typeof navigator !== "undefined" && !navigator.onLine) {
+     return { sincronizadas: 0, conError: 0, restantes: (await listarVentasPendientes()).length };
+@@ -37,6 +50,8 @@ export async function sincronizarVentasPendientes(): Promise<ResultadoSync> {
            items: venta.items,
            clienteId: venta.clienteId,
            metodoPago: venta.metodoPago,
@@ -3163,7 +3308,7 @@ index b77eb07..4f069e0 100644
        </body>
      </html>
 diff --git a/src/lib/pos/queries.ts b/src/lib/pos/queries.ts
-index 2827a37..4b9d769 100644
+index 2827a37..b38d9f8 100644
 --- a/src/lib/pos/queries.ts
 +++ b/src/lib/pos/queries.ts
 @@ -1,16 +1,23 @@
@@ -3197,7 +3342,7 @@ index 2827a37..4b9d769 100644
  
    return (data ?? []).map((p) => ({
      id: p.id,
-@@ -28,36 +35,21 @@ export async function getProductosActivos(): Promise<Producto[]> {
+@@ -28,15 +35,24 @@ export async function getProductosActivos(): Promise<Producto[]> {
  
  export async function getClientesActivos(): Promise<Cliente[]> {
    const supabase = await createClient();
@@ -3218,18 +3363,24 @@ index 2827a37..4b9d769 100644
    return (data ?? []) as Cliente[];
  }
  
-+// Misma cuenta que la pantalla de Caja (ventas por método, abonos,
-+// devoluciones y gastos del turno), para que el cierre desde el POS cuadre
-+// igual que desde Caja.
- export async function getCajaAbierta() {
--  const supabase = await createClient();
--  const { data } = await supabase
--    .from("caja")
--    .select("id, monto_inicial, abierta_at")
--    .eq("estado", "abierta")
--    .order("abierta_at", { ascending: false })
--    .limit(1);
--
+-export async function getCajaAbierta() {
++export type CajaAbiertaPOS = { id: string; monto_inicial: number; abierta_at: string } | null;
++
++// Solo saber si hay caja abierta: el POS se recarga después de cada venta y
++// calcular aquí el cuadre completo (ventas, abonos, devoluciones, gastos)
++// lo hacía lento. El cuadre se pide al abrir la ventana de cierre.
++export async function getCajaAbierta(): Promise<CajaAbiertaPOS> {
+   const supabase = await createClient();
+   const { data } = await supabase
+     .from("caja")
+@@ -44,20 +60,12 @@ export async function getCajaAbierta() {
+     .eq("estado", "abierta")
+     .order("abierta_at", { ascending: false })
+     .limit(1);
++  const c = data?.[0];
++  return c ? { id: c.id, monto_inicial: Number(c.monto_inicial), abierta_at: c.abierta_at } : null;
++}
+ 
 -  const caja = data?.[0] ?? null;
 -  if (!caja) return null;
 -
@@ -3245,6 +3396,9 @@ index 2827a37..4b9d769 100644
 -  const ventasTotal = (ventas ?? []).reduce((s, v) => s + Number(v.total), 0);
 -
 -  return { ...caja, ventas_efectivo: ventasEfectivo, ventas_total: ventasTotal };
++// Misma cuenta que la pantalla de Caja, para que el cierre desde el POS
++// cuadre igual que desde Caja.
++export async function getCuadreCajaAbierta() {
 +  return getCajaActual();
  }
 diff --git a/src/lib/pos/types.ts b/src/lib/pos/types.ts
@@ -3415,3 +3569,100 @@ index 0000000..f76c21f
 +  ]);
 +  return calcularCuadre({ ventas, devoluciones, abonos, gastos });
 +}
+diff --git a/velocidad-y-duplicados.sql b/velocidad-y-duplicados.sql
+new file mode 100644
+index 0000000..83011a2
+--- /dev/null
++++ b/velocidad-y-duplicados.sql
+@@ -0,0 +1,91 @@
++-- ============================================================
++-- VentaTech: velocidad y protección contra facturas duplicadas
++-- Pegar en Supabase > SQL Editor > Run. Se puede ejecutar más de una vez.
++-- No borra ni cambia datos: solo crea índices y una regla de unicidad.
++-- ============================================================
++
++-- 1) Índices para las consultas más usadas (POS, caja, dashboard, reportes).
++--    Cada índice se crea solo si la tabla y las columnas existen.
++do $$
++declare
++  idx record;
++  faltan int;
++begin
++  for idx in
++    select * from (values
++      ('ventas_fecha_idx',            'ventas',          array['fecha']),
++      ('ventas_estado_fecha_idx',     'ventas',          array['estado', 'fecha']),
++      ('venta_items_venta_idx',       'venta_items',     array['venta_id']),
++      ('venta_pagos_venta_idx',       'venta_pagos',     array['venta_id']),
++      ('devoluciones_fecha_idx',      'devoluciones',    array['fecha']),
++      ('devoluciones_venta_idx',      'devoluciones',    array['venta_id']),
++      ('abonos_fecha_idx',            'abonos',          array['fecha']),
++      ('gastos_activo_fecha_idx',     'gastos',          array['activo', 'fecha']),
++      ('deudas_estado_fecha_idx',     'deudas',          array['estado', 'fecha']),
++      ('deudas_venta_idx',            'deudas',          array['venta_id']),
++      ('productos_activo_nombre_idx', 'productos',       array['activo', 'nombre']),
++      ('clientes_activo_nombre_idx',  'clientes',        array['activo', 'nombre']),
++      ('caja_estado_abierta_idx',     'caja',            array['estado', 'abierta_at'])
++    ) as t(nombre, tabla, columnas)
++  loop
++    select count(*) into faltan
++    from unnest(idx.columnas) as c(col)
++    where not exists (
++      select 1 from information_schema.columns
++      where table_schema = 'public' and table_name = idx.tabla and column_name = c.col);
++    if to_regclass('public.' || idx.tabla) is not null and faltan = 0 then
++      execute format('create index if not exists %I on public.%I (%s)',
++        idx.nombre, idx.tabla,
++        (select string_agg(format('%I', c), ', ') from unnest(idx.columnas) c));
++    else
++      raise notice 'Índice % omitido (no existe la tabla o alguna columna)', idx.nombre;
++    end if;
++  end loop;
++end $$;
++
++-- 2) Una venta por código de cobro: si el POS manda la misma venta dos veces
++--    (doble clic, internet lento, sincronización offline), la base de datos
++--    rechaza la segunda en vez de guardar una factura repetida.
++do $$
++declare
++  repetidas int;
++begin
++  if not exists (select 1 from information_schema.columns
++                 where table_schema = 'public' and table_name = 'ventas' and column_name = 'local_id') then
++    raise notice 'ventas.local_id no existe: se omite la regla de unicidad';
++    return;
++  end if;
++
++  select count(*) into repetidas from (
++    select local_id from public.ventas where local_id is not null
++    group by local_id having count(*) > 1) d;
++
++  if repetidas > 0 then
++    raise notice 'Hay % códigos de cobro repetidos (facturas duplicadas). Revísalas con la consulta 3 y anúlalas; luego vuelve a ejecutar este archivo.', repetidas;
++  else
++    create unique index if not exists ventas_local_id_unico on public.ventas (local_id) where local_id is not null;
++  end if;
++end $$;
++
++-- 3) CONSULTA (solo lectura): posibles facturas duplicadas de los últimos 30 días.
++--    Mismo total y mismos productos, cobradas con menos de 3 minutos de diferencia.
++--    OJO: el SQL Editor ve todas las empresas.
++with firmas as (
++  select v.id, v.numero_factura, v.fecha, v.total, v.estado,
++         (select string_agg(i.nombre_producto || ' x' || i.cantidad, ', ' order by i.nombre_producto, i.cantidad)
++            from public.venta_items i where i.venta_id = v.id) as productos
++  from public.ventas v
++  where v.fecha >= now() - interval '30 days' and v.estado = 'completada'
++)
++select a.numero_factura as factura_original,
++       b.numero_factura as posible_duplicado,
++       a.fecha at time zone 'America/Santo_Domingo' as fecha_original,
++       b.fecha at time zone 'America/Santo_Domingo' as fecha_duplicado,
++       a.total, a.productos
++from firmas a
++join firmas b
++  on b.total = a.total
++ and b.productos = a.productos
++ and b.fecha > a.fecha
++ and b.fecha <= a.fecha + interval '3 minutes'
++order by a.fecha desc;

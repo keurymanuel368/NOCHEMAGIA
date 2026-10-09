@@ -1,5 +1,28 @@
 # VentaTech: pagos mixtos, cierre de caja detallado y dashboard corregido
 
+## ⚠ Actualización 9-oct: facturas cobradas dos veces y lentitud
+
+**Ejecuta también `velocidad-y-duplicados.sql`** en Supabase (después de `pagos-mixtos.sql`).
+
+Qué pasaba:
+- Cada intento de cobro generaba un código de venta nuevo. Si el cajero daba doble clic, o si
+  el servidor tardaba en responder, el segundo intento se guardaba como otra venta.
+- Después de cada venta, el servidor recargaba toda la pantalla del POS (todos los productos y
+  el cuadre de caja) antes de responder. Con internet lento, Vercel cortaba la función después
+  de guardar la venta; el POS creía que había fallado, la guardaba "sin conexión" y luego la
+  volvía a mandar: factura doble.
+
+Qué se corrigió:
+- **Un solo código por cobro:** reintentar el mismo carrito manda el mismo código; el servidor
+  devuelve la venta que ya existe.
+- **Doble clic bloqueado:** mientras una venta se procesa, no se acepta otra.
+- **Respuesta rápida:** guardar la venta ya no espera a recargar el POS; se refresca solo después.
+- **POS más liviano:** el cuadre de caja se calcula solo al abrir la ventana de cierre.
+- **Sincronización offline:** si el POS está abierto en dos pestañas, solo una sincroniza.
+- **Base de datos (SQL):** índices para que las consultas sean rápidas, y una regla que impide
+  guardar dos ventas con el mismo código. Si ya tienes facturas duplicadas, el SQL te avisa y
+  no crea la regla hasta que las anules. La consulta 3 del archivo las lista.
+
 ## Cómo aplicar (en este orden)
 
 1. **Supabase → SQL Editor:** pega `pagos-mixtos.sql` y dale a **Run** (una sola vez).
