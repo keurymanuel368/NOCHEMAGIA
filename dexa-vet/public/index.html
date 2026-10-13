@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DEXA Vet · Demo</title>
+  <meta name="description" content="DEXA Vet: gestión veterinaria para clínicas dominicanas. Pacientes, agenda, historia clínica, vacunas, caja e inventario en un solo lugar.">
+  <meta name="theme-color" content="#14161C">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233454D1'/%3E%3Cpath d='M10 8h6a8 8 0 0 1 0 16h-6z' fill='none' stroke='white' stroke-width='3'/%3E%3Ccircle cx='22.5' cy='9.5' r='2.2' fill='%237C9CFF'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Sora:wght@500;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="side" aria-label="Menú principal">
+      <a class="brand" href="#/inicio" aria-label="DEXA Vet, inicio">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M10 8h6a8 8 0 0 1 0 16h-6z" fill="none" stroke="#fff" stroke-width="3"/><circle cx="22.5" cy="9.5" r="2.2" fill="#7C9CFF"/></svg>
+        <span class="brand-text"><b>DEXA</b> Vet</span>
+      </a>
+      <nav class="nav" id="nav"></nav>
+      <div class="side-foot">
+        <div class="clinic-chip">
+          <span class="clinic-name" id="clinic-name">Clínica demo</span>
+          <span class="clinic-plan">Plan Profesional · RD$1,000/mes</span>
+        </div>
+        <button class="link-btn" data-act="reset" type="button">Reiniciar datos de demo</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="top">
+        <button class="search-btn" data-act="palette" type="button" aria-label="Buscar paciente, dueño o teléfono">
+          <span class="i" data-icon="search"></span>
+          <span class="search-ph">Buscar mascota, dueño o teléfono…</span>
+          <kbd>Ctrl K</kbd>
+        </button>
+        <div class="top-actions">
+          <span class="timer" id="timer" hidden></span>
+          <button class="btn ghost" data-act="new-cita" type="button"><span class="i" data-icon="calendar"></span><span class="hide-sm">Nueva cita</span></button>
+          <button class="btn primary" data-act="new-patient" type="button"><span class="i" data-icon="plus"></span><span class="hide-sm">Nuevo paciente</span></button>
+        </div>
+      </header>
+      <main id="view" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <div id="modal" hidden></div>
+  <div id="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "dexa-vet-demo",
+  "private": true,
+  "scripts": {
+    "dev": "npx wrangler pages dev public",
+    "deploy": "npx wrangler pages deploy public --project-name dexa-vet-demo"
+  }
+}
