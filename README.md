@@ -1,3 +1,3 @@
 # NOCHEMAGIA
 
-- [`dexa-vet/`](dexa-vet/README.md): MVP de demostración de DEXA Vet para Cloudflare Pages.
+El MVP de DEXA Vet se movió a https://github.com/keurymanuel368/dexa-vet
